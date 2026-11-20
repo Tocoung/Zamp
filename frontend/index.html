@@ -7,7 +7,18 @@
     <title>Zamp | AI-Powered Vendor Onboarding Automation</title>
   </head>
   <body class="bg-slate-50 text-slate-900 antialiased min-h-screen">
-    <div id="root"></div>
+    <div id="root">
+      <div style="min-height: 100vh; display: flex; align-items: center; justify-content: center; font-family: system-ui, -apple-system, sans-serif; background-color: #f8fafc;">
+        <div style="text-align: center;">
+          <div style="width: 44px; height: 44px; margin: 0 auto 16px; border: 4px solid #e0f2fe; border-top-color: #0284c7; border-radius: 50%; animation: spin 1s linear infinite;"></div>
+          <h2 style="font-size: 16px; font-weight: 600; color: #0f172a; margin: 0;">Zamp Vendor Onboarding</h2>
+          <p style="font-size: 13px; color: #64748b; margin: 6px 0 0;">Loading application shell...</p>
+        </div>
+      </div>
+      <style>
+        @keyframes spin { to { transform: rotate(360deg); } }
+      </style>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
