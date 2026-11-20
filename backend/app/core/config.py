@@ -1,9 +1,28 @@
 """Application configuration module using Pydantic Settings."""
 
 import os
+from pathlib import Path
 from typing import List, Union
-from pydantic import AnyHttpUrl, field_validator
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.engine import make_url
+
+# Project directory paths
+# config.py -> core -> app -> backend -> project_root
+BACKEND_DIR = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+
+
+def get_sanitized_database_url(url: str) -> str:
+    """Return a masked database connection string safe for logging.
+    
+    Hides credentials while retaining dialect, driver, host, and database name.
+    """
+    try:
+        parsed = make_url(url)
+        return parsed.render_as_string(hide_password=True)
+    except Exception:
+        return "sqlite:///[sanitized]" if "sqlite" in str(url) else "database://[sanitized]"
 
 
 class Settings(BaseSettings):
@@ -42,8 +61,27 @@ class Settings(BaseSettings):
             return list(v)
         raise ValueError("Invalid format for CORS_ORIGINS")
 
-    # Database
+    # Database connection URL
+    # Default: Relative SQLite URL, resolved deterministically against PROJECT_ROOT
     DATABASE_URL: str = "sqlite:///./vendor_onboarding.db"
+
+    @property
+    def resolved_database_url(self) -> str:
+        """Resolve relative SQLite database paths predictably to the project root directory.
+        
+        Guarantees that SQLite file location is deterministic regardless of the
+        terminal working directory (e.g. running from project root vs backend/ directory).
+        """
+        url_str = self.DATABASE_URL
+        if url_str.startswith("sqlite") and not url_str.startswith("sqlite:///:memory:"):
+            prefix = "sqlite:///"
+            if url_str.startswith(prefix):
+                raw_path = url_str[len(prefix):]
+                # If path is relative (does not start with a leading slash on POSIX)
+                if not raw_path.startswith("/"):
+                    normalized_path = (PROJECT_ROOT / raw_path).resolve()
+                    return f"sqlite:///{normalized_path}"
+        return url_str
 
     model_config = SettingsConfigDict(
         env_file=(".env", "backend/.env"),

@@ -2,7 +2,7 @@
 ## Architecture Design Document — Vendor Onboarding Automation
 
 **Author:** Lead Software Engineer  
-**Version:** 1.0.0 (Phase 1 — Step 1)  
+**Version:** 1.1.0 (Phase 1 — Step 1.1 Hardening Iteration)  
 **Status:** Approved & Implemented Foundation  
 
 ---
@@ -21,17 +21,17 @@ This architecture has been designed from day one to scale through five progressi
 
 ---
 
-## 2. Technology Selection & Justification
+## 2. Technology Selection & Driver Requirements
 
-| Layer | Selected Technology | Alternative Considered | Justification |
+| Layer | Selected Technology | Alternative Considered | Justification & Driver Requirements |
 | :--- | :--- | :--- | :--- |
-| **Frontend Framework** | **React 18 + TypeScript** | Next.js, Vue 3 | React with TypeScript provides industry-standard stability, strict type safety across complex vendor state trees, strong UI ecosystem, and fast client-side rendering. For a dedicated enterprise workflow portal, a Vite-backed SPA avoids server-side rendering (SSR) overhead and complex edge runtime constraints. |
+| **Frontend Framework** | **React 18 + TypeScript** | Next.js, Vue 3 | React with TypeScript provides industry-standard stability, compile-time type safety across complex vendor state trees, strong UI ecosystem, and fast client-side rendering. For an operational workflow portal, a Vite-backed SPA avoids server-side rendering (SSR) overhead and edge runtime constraints. |
 | **Styling** | **Tailwind CSS** | Material UI, CSS Modules | High-velocity development, zero runtime style overhead, predictable layout control, and unified design token primitives suitable for high-density enterprise review consoles. |
-| **Backend Framework** | **Python (FastAPI)** | Node.js (Express/Nest), Go | FastAPI offers native async performance, automatic OpenAPI/Swagger documentation generation, strict data validation with Pydantic v2, and direct first-class compatibility with the Python AI/ML ecosystem (LangChain, LlamaIndex, PyMuPDF, OCR engines, Gemini/OpenAI SDKs). |
-| **Data Validation** | **Pydantic v2** | Marshmallow, Cerberus | Native FastAPI integration, high-speed C-based core (pydantic-core), explicit schemas for API request/response contracts, and seamless data parsing for messy document extraction payloads. |
-| **Persistence / ORM** | **SQLAlchemy 2.0** | Raw SQL, Tortoise ORM | Modern typing, complete database-agnostic abstraction, Unit of Work and Repository pattern support, and smooth migration paths. |
-| **Database Engine** | **SQLite (Dev) / PostgreSQL (Prod)** | MongoDB, DynamoDB | Relational integrity is mandatory for compliance, vendor state machines, and relational audit logging. SQLite delivers zero-friction, self-contained local development without external daemon requirements, while standard SQLAlchemy engine abstraction enables instant switching to PostgreSQL via a single `DATABASE_URL` environment variable. |
-| **Icons & Design** | **Lucide React** | Heroicons, FontAwesome | Modern, lightweight, customizable SVG iconography for clean enterprise indicators. |
+| **Backend Framework** | **Python (FastAPI) + Uvicorn** | Node.js (Express/Nest), Go | FastAPI offers native async performance, automatic OpenAPI/Swagger documentation generation (`/docs`), strict data validation with Pydantic v2, and direct first-class compatibility with the Python AI/ML ecosystem (LangChain, LlamaIndex, PyMuPDF, OCR engines, Gemini/OpenAI SDKs). |
+| **Data Validation** | **Pydantic v2 + pydantic-settings** | Marshmallow, Cerberus | Native FastAPI integration, high-speed C-based core (`pydantic-core`), explicit schemas for API request/response contracts, and fail-fast environment variable validation. |
+| **Persistence / ORM** | **SQLAlchemy 2.0** | Raw SQL, Tortoise ORM | Modern typing, complete database-agnostic abstraction, Unit of Work and Repository pattern support, and clean migration paths. |
+| **Database Engine** | **SQLite (Active Dev) / PostgreSQL (Production Target)** | MongoDB, DynamoDB | Relational integrity is mandatory for compliance, vendor state machines, and relational audit logging. **SQLite is the currently active and fully installed driver** (`sqlite3` standard library), providing zero-dependency local development and predictable absolute path resolution. **PostgreSQL is supported via configuration interface** (`DATABASE_URL`), but running against PostgreSQL requires installing a compatible production DBAPI driver (such as `psycopg2-binary` or `asyncpg`). |
+| **Icons & Design** | **Lucide React** | Heroicons, FontAwesome | Modern, lightweight, customizable SVG iconography. Dependency pre-bundling is explicitly configured in `vite.config.ts` to prevent module transformation waterfalls. |
 
 ---
 
@@ -43,7 +43,7 @@ The application adopts a **Modular Monolith** architecture. Microservices are de
 +-----------------------------------------------------------------------------------+
 |                                PRESENTATION TIER                                  |
 |                                                                                   |
-|  React 18 + TypeScript (Vite)                                                     |
+|  React 18 + TypeScript (Vite + Tailwind CSS)                                      |
 |  +-------------------------+  +-------------------------+  +--------------------+ |
 |  | Vendor Intake Portal    |  | Compliance Review Ops   |  | Audit Trail & Logs | |
 |  +-------------------------+  +-------------------------+  +--------------------+ |
@@ -55,9 +55,10 @@ The application adopts a **Modular Monolith** architecture. Microservices are de
 |                                                                                   |
 |  FastAPI Routing & Lifecycle (`backend/app/api/`)                                 |
 |  +-----------------------------------------------------------------------------+  |
+|  | Operational Probes: /healthz (Liveness) | /readyz (Readiness)                |  |
+|  | Diagnostic API: /api/v1/health (Frontend Status)                             |  |
 |  | CORS Middleware | Pydantic Request Validation | Auth & RBAC (Future)        |  |
 |  +-----------------------------------------------------------------------------+  |
-|  | /api/v1/health  | /api/v1/vendors  | /api/v1/documents | /api/v1/reviews     |  |
 +------------------------------------------+----------------------------------------+
                                            |
                                            v
@@ -79,83 +80,99 @@ The application adopts a **Modular Monolith** architecture. Microservices are de
 |                                                                                   |
 |  SQLAlchemy 2.0 Session Factory (`backend/app/db/`)                               |
 |  +-------------------------------------+ +--------------------------------------+ |
-|  | Relational Schema (SQLite / Postgres) | Local Filesystem / S3 Blob Storage   | |
+|  | Deterministic SQLite (Dev)           | Local Filesystem / S3 Blob Storage   | |
+|  | PostgreSQL (Prod Target w/ Driver)  |                                      | |
 |  +-------------------------------------+ +--------------------------------------+ |
 +-----------------------------------------------------------------------------------+
 ```
 
 ---
 
-## 4. Planned Module Boundaries & Future Phase Mapping
+## 4. Health-Check & Operational Probes Architecture
 
-To guarantee that later phases plug in seamlessly without rewriting foundational code, service boundaries are strictly isolated behind Python classes and functions:
+To comply with enterprise operations and container orchestrator standards (e.g. Kubernetes, ECS, Cloud Run), the backend implements two clearly distinguished probes alongside a diagnostic endpoint:
 
-### 4.1 Vendor Submission Module (`services/vendor_service.py`)
-- **Phase Target:** Phase 1 (Step 2) & Phase 2.
-- **Responsibilities:** Ingests company profile, tax IDs, banking information, and submission metadata. Manages the lifecycle state machine (`DRAFT` -> `SUBMITTED` -> `UNDER_REVIEW` -> `APPROVED` / `REJECTED` / `PENDING_INFO`).
+1. **Liveness Probe (`GET /healthz`):**
+   - **Purpose:** Verifies that the FastAPI process is alive, the event loop is responsive, and HTTP traffic can be accepted.
+   - **Status Code:** `200 OK`
+   - **Payload:** `{"status": "alive"}`
+   - **Behavior:** Does NOT touch backing infrastructure (e.g., database) to prevent cascading container restarts during transient dependency degradation.
 
-### 4.2 Document Storage & Ingestion (`services/document_service.py`)
-- **Phase Target:** Phase 2.
-- **Responsibilities:** Handles multipart file uploads (PDF, PNG, JPG). Computes SHA-256 cryptographic hashes for document immutability, stores files in structured local directories or cloud object storage, and tracks document metadata.
+2. **Readiness Probe (`GET /readyz`):**
+   - **Purpose:** Verifies whether critical downstream dependencies (specifically the database) are healthy and ready to serve live traffic.
+   - **Status Code:** `200 OK` when database responds to `SELECT 1`; `503 Service Unavailable` when database connectivity is degraded.
+   - **Payload:**
+     ```json
+     // Healthy (200 OK):
+     {"status": "ready", "dependencies": {"database": "connected"}}
 
-### 4.3 Data Extraction & OCR Engine (`services/extraction_service.py`)
-- **Phase Target:** Phase 2.
-- **Responsibilities:** Extracts textual and tabular data from unstructured files (e.g. extracting Tax ID from a W-9, account numbers and bank name from a voided cheque or statement). Produces normalized JSON representations with confidence scores.
+     // Degraded (503 Service Unavailable):
+     {"status": "not_ready", "dependencies": {"database": "disconnected"}}
+     ```
 
-### 4.4 Deterministic Validation Module (`services/validation_service.py`)
-- **Phase Target:** Phase 2 & 3.
-- **Responsibilities:**
-  - Field-level syntax checks (IBAN checksum validation, EIN format, VAT syntax per jurisdiction).
-  - Cross-source entity reconciliation (e.g., does the name on the bank document match the registered company name?).
-  - Expiration checks on compliance certificates.
-
-### 4.5 Decision Making Engine (`services/decision_service.py`)
-- **Phase Target:** Phase 3.
-- **Responsibilities:** Applies rules and heuristics to synthesize validation outputs into a concrete onboarding decision:
-  - **APPROVED:** All critical checks pass with high confidence.
-  - **PENDING / REQUIREMENT_MISSING:** Minor discrepancies, illegible document, or missing mandatory certificate. Generates actionable feedback.
-  - **REJECTED:** Fraud alert, sanctions match, or fundamentally invalid credentials.
-
-### 4.6 Human-in-the-Loop Review Console (`services/review_service.py`)
-- **Phase Target:** Phase 3.
-- **Responsibilities:** Flags ambiguous cases (confidence score < threshold or flagged conflicts) to human operators. Records reviewer notes, manual overrides, and approval timestamps.
-
-### 4.7 Communication & Notification Module (`services/communication_service.py`)
-- **Phase Target:** Phase 3.
-- **Responsibilities:** Generates standardized vendor email/messages detailing onboarding approval or itemized requirements to resolve pending status.
-
-### 4.8 Immutable Audit Trail (`services/audit_service.py`)
-- **Phase Target:** Phase 4.
-- **Responsibilities:** Logs every state transition, validation result, document upload, and user action with timestamps, actor IDs, and payload snapshots.
+3. **Frontend Diagnostic Endpoint (`GET /api/v1/health`):**
+   - **Purpose:** Retained under API versioning for frontend UI diagnostic widgets, environment indicators, and version tracking.
+   - **Semantics:** Semantically consistent with readiness (returns `200 OK` when database is healthy; `503 Service Unavailable` when degraded).
 
 ---
 
-## 5. Five-Phase Implementation Roadmap
+## 5. Database Configuration & Security Hardening
+
+1. **Predictable SQLite Relative Path Resolution:**
+   - SQLite connection URLs specifying relative paths (e.g., `sqlite:///./vendor_onboarding.db`) are resolved deterministically against the project root directory via `Settings.resolved_database_url`.
+   - Running application commands from the project root, `backend/`, or temporary subdirectories always targets the identical database file on disk.
+2. **Credential Masking in Logging:**
+   - The helper `get_sanitized_database_url(url)` parses connection strings via SQLAlchemy `make_url` and renders them with `hide_password=True`.
+   - Plaintext credentials and sensitive query parameters are never logged during engine initialization or failure handling.
+3. **Safe Exception Handling:**
+   - Connection failures log only the masked database identifier and exception class name (`type(e).__name__`), preventing credential or internal network topography disclosure.
+4. **Driver Transparency:**
+   - SQLite is documented as the sole active driver in local development.
+   - PostgreSQL support is provided via the standard `DATABASE_URL` interface, but requires explicit driver installation (`pip install psycopg2-binary`) in production.
+
+---
+
+## 6. Testing Infrastructure & Database Isolation
+
+Automated test execution is strictly decoupled from the development database:
+1. **Isolated Session Fixture:** Pytest dynamically creates a temporary directory and SQLite database file per test session (`tmp_path_factory.mktemp("zamp_test_data") / "isolated_test_onboarding.db"`).
+2. **Dependency Overrides:** FastAPI `app.dependency_overrides[get_db]` injects the temporary session into all endpoint calls.
+3. **No Development Database Contamination:** Tests never read or write to `vendor_onboarding.db`. An explicit isolation test verifies that development database files remain untouched.
+4. **Separate Probe Tests:** Liveness (`/healthz`), readiness (`/readyz`), and diagnostic (`/api/v1/health`) endpoints are tested under both healthy and degraded dependency conditions.
+
+---
+
+## 7. Five-Phase Implementation Roadmap
+
+The project follows a strict, incremental implementation sequence. Boundaries are maintained between implemented foundation code and planned features:
 
 ```mermaid
 flowchart TD
-    subgraph P1["Phase 1: Foundation & Core Engine"]
-        F1["Step 1: Project Foundation & Architecture (CURRENT)"] --> F2["Step 2: Core Vendor Intake Data Models & API"]
+    subgraph P1["Phase 1: Foundation & Core Onboarding Engine"]
+        F1["Step 1: Foundation & Probes (IMPLEMENTED)"] --> F2["Step 2: Vendor Data Model & Submission (PLANNED)"]
+        F2 --> F3["Step 3: Deterministic Validation (PLANNED)"]
+        F3 --> F4["Step 4: Decision Engine (PLANNED)"]
+        F4 --> F5["Step 5: End-to-End Integration (PLANNED)"]
     end
 
-    subgraph P2["Phase 2: Intelligent Document Processing"]
-        D1["Document Ingestion & File Storage"] --> D2["OCR / LLM Structured Extraction"]
+    subgraph P2["Phase 2: Intelligent Document Processing & Verification"]
+        D1["Multi-Document Ingestion & Secure Storage"] --> D2["OCR & Structured Extraction Pipeline"]
         D2 --> D3["Cross-Document Verification & Sanity Checks"]
     end
 
-    subgraph P3["Phase 3: Exception Handling & HITL"]
-        E1["Decision Engine (Approved / Pending / Rejected)"] --> E2["Human Review Queue & Override Workflow"]
-        E2 --> E3["Vendor Communication & Defect Clarification"]
+    subgraph P3["Phase 3: Exception Handling & Human-in-the-Loop Review"]
+        E1["Exception Review Queue & Triage"] --> E2["Human Reviewer Console & Overrides"]
+        E2 --> E3["Vendor Defect Clarification & Notifications"]
     end
 
-    subgraph P4["Phase 4: Product UI, Dashboard & Audit Trail"]
-        U1["Full-featured Vendor Registration Form"] --> U2["Compliance Reviewer Console"]
-        U2 --> U3["Audit Log Explorer & Operational Metrics"]
+    subgraph P4["Phase 4: Product Dashboard & Audit Trail"]
+        U1["Operations Management Portal"] --> U2["Immutable Audit Trail & Event Sourcing"]
+        U2 --> U3["Onboarding Lifecycle Analytics"]
     end
 
     subgraph P5["Phase 5: Advanced Intelligence & Production Polish"]
-        A1["AI Anomaly Detection & Reasoning Explanations"] --> A2["Automated E2E Testing & Performance Tuning"]
-        A2 --> A3["Containerization & Deployment Runbooks"]
+        A1["LLM Verification Agents & Fraud Scoring"] --> A2["Automated Resilience & Security Audits"]
+        A2 --> A3["Containerization & Production Runbooks"]
     end
 
     P1 --> P2
@@ -164,21 +181,26 @@ flowchart TD
     P4 --> P5
 ```
 
+### Module Status Summary
+
+| Module | Phase | Status | Location |
+| :--- | :--- | :--- | :--- |
+| **Application Runtime & Probes** | Phase 1 (Step 1) | **Implemented** | `backend/app/main.py` (`/healthz`, `/readyz`) |
+| **Deterministic DB Engine & Base** | Phase 1 (Step 1) | **Implemented** | `backend/app/db/base.py`, `backend/app/db/session.py` |
+| **Frontend Application Shell** | Phase 1 (Step 1) | **Implemented** | `frontend/src/App.tsx`, `frontend/src/components/` |
+| **Vendor Submission & Profile** | Phase 1 (Step 2) | *Planned* | `backend/app/services/vendor_service.py` |
+| **Deterministic Validation Engine** | Phase 1 (Step 3) | *Planned* | `backend/app/services/validation_service.py` |
+| **Decision Engine (Approved/Pending/Rejected)** | Phase 1 (Step 4) | *Planned* | `backend/app/services/decision_service.py` |
+| **End-to-End Core Integration** | Phase 1 (Step 5) | *Planned* | `backend/app/api/v1/endpoints/vendors.py` |
+| **Document Processing & OCR** | Phase 2 | *Planned* | `backend/app/services/document_service.py` |
+| **Human-in-the-Loop Review** | Phase 3 | *Planned* | `backend/app/services/review_service.py` |
+| **Audit Trail & Logging** | Phase 4 | *Planned* | `backend/app/services/audit_service.py` |
+| **LLM Verification Agents** | Phase 5 | *Planned* | `backend/app/services/ai_agent_service.py` |
+
 ---
 
-## 6. Security, Configuration & Secrets Management
+## 8. Dependency Reproducibility Strategy
 
-1. **Zero Hardcoded Credentials:** All credentials, hosts, and environment secrets are ingested through environment variables (`.env`).
-2. **Pydantic BaseSettings:** Settings are typed and validated upon process startup; misconfigurations fail fast with actionable errors.
-3. **CORS Governance:** Strict explicit origin whitelist configuration (`CORS_ORIGINS`) prevents unauthorized cross-origin browser requests.
-4. **Data Isolation:** Database connections use parameterized queries via SQLAlchemy 2.0 to eliminate SQL injection vulnerabilities.
-5. **Git Hygiene:** `.gitignore` actively excludes `.env`, `*.db`, SQLite storage, `node_modules`, `__pycache__`, and temporary test artifacts.
-
----
-
-## 7. Operational Standards & Local Development Runbook
-
-- **Frontend:** Managed through Vite development server on port `5173`.
-- **Backend:** Managed through Uvicorn ASGI server on port `8000`.
-- **Health Verification:** Monitored via `/api/v1/health` and `/healthz`.
-- **API Documentation:** Interactive Swagger UI available at `http://localhost:8000/docs`.
+For a one-week case study project, dependency management balances determinism with zero unnecessary tool overhead:
+- **Backend:** Pin explicit, exact versions in `backend/requirements.txt` (`==` pinning). Standard installation via `python3 -m venv .venv && pip install -r requirements.txt`.
+- **Frontend:** Pinned exact dependency ranges with an immutable `frontend/package-lock.json`. Clean, reproducible installation via `npm ci`.

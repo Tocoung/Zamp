@@ -1,8 +1,8 @@
 # Zamp — AI-Powered Vendor Onboarding Automation
 
 > **Case Study:** Zamp AI Solutions Analyst Case Study  
-> **Phase:** 1 (Step 1 — Project Foundation & Architecture)  
-> **Status:** Foundation Implemented & Verified
+> **Phase:** 1 (Step 1.1 — Foundation Hardening & Architecture Alignment)  
+> **Status:** Hardened & Verified Foundation
 
 An automated platform designed to streamline vendor company onboarding, compliance document extraction, multi-source verification, decisioning (Approved / Pending / Rejected), and human-in-the-loop review.
 
@@ -14,8 +14,8 @@ The project uses a clean **Modular Monolith** architecture with decoupled presen
 
 - **Frontend:** React 18 + TypeScript + Vite + Tailwind CSS + Lucide React
 - **Backend:** Python 3.9+ + FastAPI + Pydantic v2 + Uvicorn
-- **Persistence:** SQLAlchemy 2.0 (SQLite for zero-friction local development, PostgreSQL ready via `DATABASE_URL`)
-- **Testing:** Pytest + FastAPI TestClient (HTTPX)
+- **Persistence:** SQLAlchemy 2.0 (Active: SQLite with deterministic path resolution; Production interface: PostgreSQL via `DATABASE_URL` with driver)
+- **Testing:** Pytest + FastAPI TestClient (HTTPX) with temporary isolated SQLite databases
 
 Detailed architectural boundaries and module roadmaps can be found in [docs/architecture.md](docs/architecture.md).
 
@@ -25,43 +25,46 @@ Detailed architectural boundaries and module roadmaps can be found in [docs/arch
 
 ```text
 .
-├── .env.example              # Root environment template
-├── .gitignore                # Version control exclusions
-├── README.md                 # Project setup and documentation
+├── .env.example              # Master root environment template
+├── .gitignore                # Strict version control exclusions
+├── README.md                 # Project setup and operational documentation
 ├── docs/
-│   └── architecture.md       # Comprehensive architecture document
+│   └── architecture.md       # Comprehensive architecture specification
 ├── backend/
-│   ├── .env.example          # Backend environment template
-│   ├── requirements.txt      # Python dependencies
+│   ├── .env.example          # Backend-specific environment template
+│   ├── requirements.txt      # Pinned Python dependencies
 │   ├── app/
 │   │   ├── __init__.py
-│   │   ├── main.py           # FastAPI entrypoint & middleware configuration
+│   │   ├── main.py           # FastAPI entrypoint, lifespan, /healthz & /readyz probes
 │   │   ├── core/             # Configuration & logging
-│   │   │   ├── config.py     # Pydantic BaseSettings environment loader
-│   │   │   └── logging.py    # Structured logging
-│   │   ├── db/               # Persistence layer
+│   │   │   ├── config.py     # Pydantic BaseSettings, path resolution & URL sanitizer
+│   │   │   └── logging.py    # Structured application logging
+│   │   ├── db/               # Persistence abstraction
 │   │   │   ├── base.py       # SQLAlchemy 2.0 DeclarativeBase
-│   │   │   └── session.py    # Engine, SessionLocal, and health checks
+│   │   │   └── session.py    # Engine, SessionLocal, and safe connectivity checks
 │   │   ├── api/              # API presentation layer
-│   │   │   ├── router.py     # Router aggregation & extension points
+│   │   │   ├── router.py     # Router aggregation & extension mount points
 │   │   │   └── v1/
 │   │   │       └── endpoints/
 │   │   │           └── health.py # /api/v1/health diagnostic endpoint
 │   │   └── services/         # Decoupled business logic (placeholder for Step 2+)
-│   └── tests/                # Automated pytest suite
-│       ├── conftest.py
-│       ├── test_config.py
-│       └── test_health.py
+│   └── tests/                # Automated pytest suite (isolated test database)
+│       ├── conftest.py       # Isolated test engine and session fixtures
+│       ├── test_config.py    # Settings, path resolution & sanitizer tests
+│       └── test_health.py    # Probes, diagnostics, and isolation tests
 └── frontend/
     ├── package.json          # Node dependencies & scripts
-    ├── tsconfig.json         # TypeScript configuration
-    ├── vite.config.ts        # Vite build tool configuration
+    ├── package-lock.json     # Deterministic lockfile
+    ├── tsconfig.json         # Strict TypeScript configuration
+    ├── tsconfig.node.json    # Node TypeScript configuration
+    ├── vite.config.ts        # Vite build tool configuration & pre-bundling
     ├── tailwind.config.js    # Tailwind design tokens
     ├── .env.example          # Frontend environment template
-    ├── index.html            # Single page application template
+    ├── index.html            # Single page application template & fallback skeleton
     └── src/
         ├── App.tsx           # Application shell & landing UI
         ├── main.tsx          # React DOM entry point
+        ├── vite-env.d.ts     # Vite client type definitions
         ├── config/api.ts     # Centralized API client & health polling
         └── components/       # Branded UI components
             ├── Header.tsx
@@ -94,7 +97,7 @@ Detailed architectural boundaries and module roadmaps can be found in [docs/arch
    source .venv/bin/activate
    ```
 
-3. **Install dependencies:**
+3. **Install reproducible dependencies:**
    ```bash
    pip install -r requirements.txt
    ```
@@ -104,7 +107,7 @@ Detailed architectural boundaries and module roadmaps can be found in [docs/arch
    cp .env.example .env
    ```
 
-5. **Run backend tests:**
+5. **Run backend automated tests (executes in isolated temporary database):**
    ```bash
    pytest
    ```
@@ -114,7 +117,9 @@ Detailed architectural boundaries and module roadmaps can be found in [docs/arch
    uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
    ```
    - API Root: [http://localhost:8000/](http://localhost:8000/)
-   - Health Check: [http://localhost:8000/api/v1/health](http://localhost:8000/api/v1/health)
+   - Liveness Probe: [http://localhost:8000/healthz](http://localhost:8000/healthz)
+   - Readiness Probe: [http://localhost:8000/readyz](http://localhost:8000/readyz)
+   - Diagnostic Endpoint: [http://localhost:8000/api/v1/health](http://localhost:8000/api/v1/health)
    - Interactive Swagger API Docs: [http://localhost:8000/docs](http://localhost:8000/docs)
 
 ---
@@ -126,9 +131,9 @@ Detailed architectural boundaries and module roadmaps can be found in [docs/arch
    cd frontend
    ```
 
-2. **Install Node packages:**
+2. **Install reproducible Node dependencies via lockfile:**
    ```bash
-   npm install
+   npm ci
    ```
 
 3. **Configure environment:**
@@ -149,26 +154,56 @@ Detailed architectural boundaries and module roadmaps can be found in [docs/arch
 
 ---
 
-## 4. Verification & Health Check Endpoints
+## 4. Operational Probes & Health Check Architecture
 
-- **`GET /api/v1/health`**: Returns JSON status of the service, environment, timestamp, and live database engine connectivity.
-  ```json
-  {
-    "status": "healthy",
-    "timestamp": "2026-11-21T00:00:00Z",
-    "environment": "development",
-    "version": "0.1.0",
-    "database": "connected"
-  }
-  ```
-- **`GET /healthz`**: Simple container liveness probe (`{"status": "ok"}`).
+The service exposes two standard operational probes alongside a rich diagnostic endpoint:
+
+1. **`GET /healthz` (Liveness Probe):**
+   - Verifies the application process is running and accepting HTTP requests.
+   - Does not touch the database.
+   - Status code: `200 OK`
+   - Response: `{"status": "alive"}`
+
+2. **`GET /readyz` (Readiness Probe):**
+   - Verifies critical downstream dependencies (database connection).
+   - Status code: `200 OK` when healthy; `503 Service Unavailable` when degraded.
+   - Healthy response: `{"status": "ready", "dependencies": {"database": "connected"}}`
+   - Degraded response: `{"status": "not_ready", "dependencies": {"database": "disconnected"}}`
+
+3. **`GET /api/v1/health` (Frontend Diagnostic Endpoint):**
+   - Preserved for frontend UI status widgets, version tracking, and environment reporting.
+   - Returns `200 OK` when ready; `503 Service Unavailable` when degraded.
+   - Response:
+     ```json
+     {
+       "status": "healthy",
+       "timestamp": "2026-11-21T00:00:00Z",
+       "environment": "development",
+       "version": "0.1.0",
+       "database": "connected"
+     }
+     ```
 
 ---
 
-## 5. Incremental Phase Roadmap
+## 5. Database Configuration & Path Resolution
 
-- **Phase 1: Foundation & Core Engine** *(Step 1 Complete; Step 2: Vendor entity models & API)*
-- **Phase 2: Intelligent Document Processing** *(Uploads, OCR, cross-validation)*
-- **Phase 3: Exception Handling & HITL Review** *(Decision engine, human review console, notifications)*
-- **Phase 4: Product UI, Dashboard & Audit Trail** *(Full vendor portal, operations dashboard, audit log)*
-- **Phase 5: Advanced Intelligence & Production Polish** *(LLM verification agents, anomaly scoring, deployment)*
+- **Predictable SQLite Path Resolution:** Relative paths such as `sqlite:///./vendor_onboarding.db` are resolved automatically against the project root directory, guaranteeing consistent file placement regardless of the active terminal working directory.
+- **Credential Masking:** Connection strings logged during startup and error handling are sanitized via `hide_password=True` to prevent credential exposure.
+- **Driver Clarity:** SQLite is the default installed driver. Connecting to PostgreSQL in production requires installing a compatible DBAPI driver package (`psycopg2-binary` or `asyncpg`).
+
+---
+
+## 6. Agreed Five-Phase Roadmap
+
+1. **Phase 1: Foundation & Core Onboarding Engine**
+   - Step 1: Project Foundation & Architecture *(Completed)*
+   - Step 1.1: Foundation Hardening & Architecture Alignment *(Current)*
+   - Step 2: Vendor Data Model & Submission API *(Planned)*
+   - Step 3: Deterministic Validation *(Planned)*
+   - Step 4: Decision Engine *(Planned)*
+   - Step 5: End-to-End Integration *(Planned)*
+2. **Phase 2: Intelligent Document Processing & Cross-Document Verification**
+3. **Phase 3: Exception Handling & Human-in-the-Loop Review**
+4. **Phase 4: Product Dashboard & Audit Trail**
+5. **Phase 5: Advanced Intelligence & Production Polish**

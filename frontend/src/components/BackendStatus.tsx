@@ -93,7 +93,7 @@ export const BackendStatus: React.FC = () => {
             {health ? getStatusBadge(health.database) : <span className="text-xs text-slate-400">Checking...</span>}
           </div>
           <div className="text-xs text-slate-600 font-mono mt-2">
-            SQLAlchemy (SQLite / PostgreSQL)
+            SQLAlchemy 2.0 (SQLite Engine)
           </div>
         </div>
 
