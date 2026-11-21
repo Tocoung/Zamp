@@ -97,9 +97,29 @@ class VendorCreate(VendorBase):
         return v
 
 
-class VendorResponse(VendorBase):
+class VendorResponse(BaseModel):
     """Full vendor record response with masked banking account number."""
     id: str = Field(..., examples=["123e4567-e89b-12d3-a456-426614174000"])
+    legal_name: Optional[str] = None
+    trade_name: Optional[str] = None
+    business_type: Optional[str] = None
+    country_of_incorporation: Optional[str] = None
+    registration_number: Optional[str] = None
+    contact_name: Optional[str] = None
+    contact_email: Optional[str] = None
+    contact_phone: Optional[str] = None
+    address_line1: Optional[str] = None
+    address_line2: Optional[str] = None
+    city: Optional[str] = None
+    state_province: Optional[str] = None
+    postal_code: Optional[str] = None
+    address_country: Optional[str] = None
+    tax_id_type: Optional[str] = None
+    tax_id_number: Optional[str] = None
+    bank_account_holder_name: Optional[str] = None
+    bank_name: Optional[str] = None
+    bank_routing_number: Optional[str] = None
+    bank_country: Optional[str] = None
     status: str = Field(..., examples=["SUBMITTED"])
     bank_account_number_masked: str = Field(..., examples=["••••••••1098"])
     created_at: datetime
