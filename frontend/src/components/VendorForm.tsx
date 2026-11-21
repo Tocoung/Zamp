@@ -80,6 +80,7 @@ export const VendorForm: React.FC<VendorFormProps> = ({
 }) => {
   const [formData, setFormData] = useState<VendorCreatePayload>(INITIAL_FORM_STATE);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isLocked, setIsLocked] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [createdVendor, setCreatedVendor] = useState<VendorResponse | null>(null);
 
@@ -89,22 +90,27 @@ export const VendorForm: React.FC<VendorFormProps> = ({
     const { name, value } = e.target;
     setFormData((prev) => ({ ...prev, [name]: value }));
     if (error) setError(null);
+    if (isLocked) setIsLocked(false);
   };
 
   const handleFillDemoData = () => {
     setFormData(SAMPLE_DEMO_DATA);
     setCreatedVendor(null);
     setError(null);
+    setIsLocked(false);
   };
 
   const handleReset = () => {
     setFormData(INITIAL_FORM_STATE);
     setCreatedVendor(null);
     setError(null);
+    setIsLocked(false);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmitting || isLocked) return;
+
     setError(null);
     setCreatedVendor(null);
 
@@ -134,6 +140,7 @@ export const VendorForm: React.FC<VendorFormProps> = ({
     try {
       const vendor = await createVendor(formData);
       setCreatedVendor(vendor);
+      setIsLocked(true);
       if (onVendorCreated) {
         onVendorCreated(vendor);
       }
@@ -605,29 +612,48 @@ export const VendorForm: React.FC<VendorFormProps> = ({
         </section>
 
         {/* Submit Actions */}
-        <div className="pt-4 border-t border-slate-200 flex items-center justify-end gap-3">
-          <button
-            type="button"
-            onClick={handleReset}
-            disabled={isSubmitting}
-            className="px-4 py-2 border border-slate-300 rounded-lg text-xs font-medium text-slate-700 hover:bg-slate-50 transition-colors"
-          >
-            Reset
-          </button>
-          <button
-            type="submit"
-            disabled={isSubmitting}
-            className="inline-flex items-center gap-2 px-6 py-2 bg-sky-600 hover:bg-sky-700 disabled:bg-sky-400 text-white rounded-lg text-xs font-semibold shadow-sm transition-colors"
-          >
-            {isSubmitting ? (
-              <>
-                <Loader2 className="w-4 h-4 animate-spin" />
-                <span>Saving Vendor Record...</span>
-              </>
-            ) : (
-              <span>Submit Vendor Registration</span>
+        <div className="pt-4 border-t border-slate-200 flex flex-col sm:flex-row items-center justify-between gap-3">
+          <div className="text-xs text-slate-500">
+            {isLocked && (
+              <span className="inline-flex items-center gap-1.5 text-emerald-800 font-medium bg-emerald-50 px-2.5 py-1 rounded-md border border-emerald-200">
+                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                Submission locked — edit any field or click Reset to submit again
+              </span>
             )}
-          </button>
+          </div>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={handleReset}
+              disabled={isSubmitting}
+              className="px-4 py-2 border border-slate-300 rounded-lg text-xs font-medium text-slate-700 hover:bg-slate-50 transition-colors"
+            >
+              Reset
+            </button>
+            <button
+              type="submit"
+              disabled={isSubmitting || isLocked}
+              className={`inline-flex items-center gap-2 px-6 py-2 rounded-lg text-xs font-semibold shadow-sm transition-colors ${
+                isLocked
+                  ? 'bg-slate-200 text-slate-500 cursor-not-allowed border border-slate-300'
+                  : 'bg-sky-600 hover:bg-sky-700 disabled:bg-sky-400 text-white'
+              }`}
+            >
+              {isSubmitting ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>Saving Vendor Record...</span>
+                </>
+              ) : isLocked ? (
+                <>
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                  <span>Submitted (Edit to Re-submit)</span>
+                </>
+              ) : (
+                <span>Submit Vendor Registration</span>
+              )}
+            </button>
+          </div>
         </div>
       </form>
     </div>
