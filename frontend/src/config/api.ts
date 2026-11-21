@@ -161,10 +161,23 @@ export async function createVendor(
 
 export async function fetchVendors(
   page = 1,
-  pageSize = 10
+  pageSize = 10,
+  status?: string,
+  search?: string
 ): Promise<VendorPagination> {
+  const params = new URLSearchParams({
+    page: page.toString(),
+    page_size: pageSize.toString(),
+  });
+  if (status && status !== 'ALL') {
+    params.append('status', status);
+  }
+  if (search && search.trim()) {
+    params.append('search', search.trim());
+  }
+
   const response = await fetch(
-    `${API_BASE_URL}/vendors?page=${page}&page_size=${pageSize}`,
+    `${API_BASE_URL}/vendors?${params.toString()}`,
     {
       method: 'GET',
       headers: {
@@ -278,6 +291,133 @@ export async function validateExistingVendor(
       // fallback
     }
     throw new Error(errorMessage);
+  }
+
+  return response.json();
+}
+
+export type DecisionStatus = 'APPROVED' | 'PENDING' | 'REJECTED';
+
+export interface DecisionReason {
+  code: string;
+  title: string;
+  explanation: string;
+  source_rule_id?: string | null;
+  source_finding_code?: string | null;
+  severity: string;
+}
+
+export interface DecisionRecommendation {
+  action: string;
+  description: string;
+  priority: 'HIGH' | 'MEDIUM' | 'LOW';
+}
+
+export interface DecisionResult {
+  decision_id: string;
+  vendor_id: string;
+  status: DecisionStatus;
+  decision_version: string;
+  ruleset_version: string;
+  validation_id: string;
+  validation_status: string;
+  reason_codes: string[];
+  reasons: DecisionReason[];
+  recommendations: DecisionRecommendation[];
+  validation_snapshot?: any;
+  decided_at: string;
+}
+
+export interface DecisionHistoryItem {
+  id: string;
+  vendor_id: string;
+  status: DecisionStatus;
+  decision_version: string;
+  ruleset_version: string;
+  validation_id: string;
+  reason_codes: string[];
+  reasons: DecisionReason[];
+  recommendations: DecisionRecommendation[];
+  decided_at: string;
+}
+
+export interface DecisionHistoryPagination {
+  items: DecisionHistoryItem[];
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+}
+
+export async function runVendorDecision(
+  vendorId: string
+): Promise<DecisionResult> {
+  const response = await fetch(`${API_BASE_URL}/vendors/${vendorId}/decide`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+  });
+
+  if (!response.ok) {
+    if (response.status === 404) {
+      throw new Error(`Vendor with ID '${vendorId}' not found`);
+    }
+    let errorMessage = `Failed to compute decision (HTTP ${response.status})`;
+    try {
+      const errData = await response.json();
+      if (errData.detail) errorMessage = errData.detail;
+    } catch {
+      // fallback
+    }
+    throw new Error(errorMessage);
+  }
+
+  return response.json();
+}
+
+export async function getLatestDecision(
+  vendorId: string
+): Promise<DecisionResult | null> {
+  const response = await fetch(`${API_BASE_URL}/vendors/${vendorId}/decision`, {
+    method: 'GET',
+    headers: {
+      Accept: 'application/json',
+    },
+  });
+
+  if (response.status === 404) {
+    return null;
+  }
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch latest decision (HTTP ${response.status})`);
+  }
+
+  return response.json();
+}
+
+export async function getDecisionHistory(
+  vendorId: string,
+  page = 1,
+  pageSize = 10
+): Promise<DecisionHistoryPagination> {
+  const response = await fetch(
+    `${API_BASE_URL}/vendors/${vendorId}/decision-history?page=${page}&page_size=${pageSize}`,
+    {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+      },
+    }
+  );
+
+  if (!response.ok) {
+    if (response.status === 404) {
+      throw new Error(`Vendor with ID '${vendorId}' not found`);
+    }
+    throw new Error(`Failed to fetch decision history (HTTP ${response.status})`);
   }
 
   return response.json();

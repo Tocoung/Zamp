@@ -79,9 +79,13 @@ class VendorService:
 
     @staticmethod
     def get_vendors_paginated(
-        db: Session, page: int = 1, page_size: int = 10
+        db: Session,
+        page: int = 1,
+        page_size: int = 10,
+        status: Optional[str] = None,
+        search: Optional[str] = None,
     ) -> Tuple[List[Vendor], int, int]:
-        """Retrieves a paginated list of vendor records.
+        """Retrieves a paginated list of vendor records with optional filtering.
         
         Ordering: Uses stable composite sort (created_at DESC, id ASC) to guarantee
         strictly deterministic pagination across page boundaries.
@@ -92,8 +96,22 @@ class VendorService:
         page = max(1, page)
         page_size = max(1, min(page_size, 100))
 
-        # Count total records
+        # Base filter expressions
+        filters = []
+        if status and status.strip().upper() != "ALL":
+            filters.append(Vendor.status == status.strip().upper())
+        if search and search.strip():
+            search_term = f"%{search.strip().lower()}%"
+            filters.append(
+                func.lower(Vendor.legal_name).like(search_term)
+                | func.lower(Vendor.contact_email).like(search_term)
+                | func.lower(Vendor.country_of_incorporation).like(search_term)
+            )
+
+        # Count total records matching filters
         total_stmt = select(func.count(Vendor.id))
+        if filters:
+            total_stmt = total_stmt.where(*filters)
         total_count = db.scalar(total_stmt) or 0
 
         # Query page slice with deterministic ordering
@@ -104,6 +122,9 @@ class VendorService:
             .offset(offset)
             .limit(page_size)
         )
+        if filters:
+            query_stmt = query_stmt.where(*filters)
+
         vendors = list(db.scalars(query_stmt).all())
         total_pages = math.ceil(total_count / page_size) if total_count > 0 else 1
 

@@ -11,6 +11,7 @@ import {
   Search,
   UserPlus,
   Loader2,
+  Filter,
 } from 'lucide-react';
 import {
   fetchVendors,
@@ -33,7 +34,8 @@ export const VendorList: React.FC<VendorListProps> = ({ onNavigateToForm }) => {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Search filter
+  // Status and search filters
+  const [statusFilter, setStatusFilter] = useState<'ALL' | 'SUBMITTED' | 'APPROVED' | 'PENDING' | 'REJECTED'>('ALL');
   const [searchTerm, setSearchTerm] = useState('');
 
   // Selected vendor for modal inspection
@@ -41,11 +43,11 @@ export const VendorList: React.FC<VendorListProps> = ({ onNavigateToForm }) => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [inspectLoadingId, setInspectLoadingId] = useState<string | null>(null);
 
-  const loadVendors = async (page = 1) => {
+  const loadVendors = async (page = 1, status = statusFilter, search = searchTerm) => {
     setIsLoading(true);
     setError(null);
     try {
-      const data = await fetchVendors(page, pageSize);
+      const data = await fetchVendors(page, pageSize, status, search);
       setVendors(data.items);
       setTotalCount(data.total);
       setCurrentPage(data.page);
@@ -58,8 +60,14 @@ export const VendorList: React.FC<VendorListProps> = ({ onNavigateToForm }) => {
   };
 
   useEffect(() => {
-    loadVendors(currentPage);
-  }, [currentPage]);
+    loadVendors(currentPage, statusFilter, searchTerm);
+  }, [currentPage, statusFilter]);
+
+  const handleSearchSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    setCurrentPage(1);
+    loadVendors(1, statusFilter, searchTerm);
+  };
 
   const handleInspect = async (vendorId: string) => {
     setInspectLoadingId(vendorId);
@@ -74,17 +82,35 @@ export const VendorList: React.FC<VendorListProps> = ({ onNavigateToForm }) => {
     }
   };
 
-  const filteredVendors = vendors.filter((v) => {
-    if (!searchTerm.trim()) return true;
-    const term = searchTerm.toLowerCase();
-    return (
-      v.legal_name.toLowerCase().includes(term) ||
-      (v.trade_name && v.trade_name.toLowerCase().includes(term)) ||
-      v.country_of_incorporation.toLowerCase().includes(term) ||
-      v.contact_email.toLowerCase().includes(term) ||
-      v.id.toLowerCase().includes(term)
-    );
-  });
+  const renderStatusBadge = (status: string) => {
+    switch (status) {
+      case 'APPROVED':
+        return (
+          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+            APPROVED
+          </span>
+        );
+      case 'PENDING':
+        return (
+          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-amber-50 text-amber-700 border border-amber-200">
+            PENDING
+          </span>
+        );
+      case 'REJECTED':
+        return (
+          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-rose-50 text-rose-700 border border-rose-200">
+            REJECTED
+          </span>
+        );
+      case 'SUBMITTED':
+      default:
+        return (
+          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-sky-50 text-sky-700 border border-sky-200">
+            {status}
+          </span>
+        );
+    }
+  };
 
   return (
     <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
@@ -104,7 +130,7 @@ export const VendorList: React.FC<VendorListProps> = ({ onNavigateToForm }) => {
         <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={() => loadVendors(currentPage)}
+            onClick={() => loadVendors(currentPage, statusFilter, searchTerm)}
             disabled={isLoading}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-100 text-slate-600 border border-slate-200 hover:bg-slate-200 transition-colors"
             title="Refresh directory"
@@ -126,8 +152,8 @@ export const VendorList: React.FC<VendorListProps> = ({ onNavigateToForm }) => {
       </div>
 
       {/* Filter and Search Bar */}
-      <div className="p-4 border-b border-slate-100 bg-white flex items-center gap-3">
-        <div className="relative flex-1 max-w-md">
+      <div className="p-4 border-b border-slate-100 bg-white flex flex-col md:flex-row md:items-center justify-between gap-3">
+        <form onSubmit={handleSearchSubmit} className="relative flex-1 max-w-md">
           <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
           <input
             type="text"
@@ -136,16 +162,32 @@ export const VendorList: React.FC<VendorListProps> = ({ onNavigateToForm }) => {
             placeholder="Search by legal name, trade name, country, or email..."
             className="w-full text-xs pl-9 pr-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-sky-500 focus:outline-none"
           />
+        </form>
+
+        {/* Status Filter Tabs */}
+        <div className="flex items-center gap-1.5 overflow-x-auto text-xs">
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400 flex items-center gap-1 mr-1">
+            <Filter className="w-3 h-3" />
+            Status:
+          </span>
+          {(['ALL', 'SUBMITTED', 'APPROVED', 'PENDING', 'REJECTED'] as const).map((st) => (
+            <button
+              key={st}
+              type="button"
+              onClick={() => {
+                setStatusFilter(st);
+                setCurrentPage(1);
+              }}
+              className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors ${
+                statusFilter === st
+                  ? 'bg-slate-900 text-white shadow-xs'
+                  : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+              }`}
+            >
+              {st === 'ALL' ? 'All' : st}
+            </button>
+          ))}
         </div>
-        {searchTerm && (
-          <button
-            type="button"
-            onClick={() => setSearchTerm('')}
-            className="text-xs text-slate-400 hover:text-slate-600 underline"
-          >
-            Clear filter
-          </button>
-        )}
       </div>
 
       {/* Error state */}
@@ -179,18 +221,18 @@ export const VendorList: React.FC<VendorListProps> = ({ onNavigateToForm }) => {
                   </div>
                 </td>
               </tr>
-            ) : filteredVendors.length === 0 ? (
+            ) : vendors.length === 0 ? (
               <tr>
                 <td colSpan={7} className="py-12 text-center text-slate-500">
                   <div className="max-w-sm mx-auto flex flex-col items-center justify-center gap-3">
                     <Building2 className="w-10 h-10 text-slate-300" />
                     <div className="font-semibold text-slate-700">No vendor records found</div>
                     <p className="text-xs text-slate-400">
-                      {searchTerm
-                        ? 'No vendors match your search criteria.'
+                      {searchTerm || statusFilter !== 'ALL'
+                        ? 'No vendors match your search or filter criteria.'
                         : 'No vendors have been submitted yet. Register your first vendor to begin.'}
                     </p>
-                    {onNavigateToForm && !searchTerm && (
+                    {onNavigateToForm && !searchTerm && statusFilter === 'ALL' && (
                       <button
                         type="button"
                         onClick={onNavigateToForm}
@@ -204,7 +246,7 @@ export const VendorList: React.FC<VendorListProps> = ({ onNavigateToForm }) => {
                 </td>
               </tr>
             ) : (
-              filteredVendors.map((vendor) => (
+              vendors.map((vendor) => (
                 <tr
                   key={vendor.id}
                   className="hover:bg-slate-50/80 transition-colors group"
@@ -244,9 +286,7 @@ export const VendorList: React.FC<VendorListProps> = ({ onNavigateToForm }) => {
                     </div>
                   </td>
                   <td className="py-3.5 px-4">
-                    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-sky-50 text-sky-700 border border-sky-200">
-                      {vendor.status}
-                    </span>
+                    {renderStatusBadge(vendor.status)}
                   </td>
                   <td className="py-3.5 px-4 text-right">
                     <button
@@ -307,6 +347,13 @@ export const VendorList: React.FC<VendorListProps> = ({ onNavigateToForm }) => {
         vendor={selectedVendor}
         isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}
+        onVendorUpdated={(updatedVendor) => {
+          setVendors((prev) =>
+            prev.map((v) =>
+              v.id === updatedVendor.id ? { ...v, status: updatedVendor.status } : v
+            )
+          );
+        }}
       />
     </div>
   );

@@ -2,8 +2,8 @@
 ## Architecture Design Document — Vendor Onboarding Automation
 
 **Author:** Lead Software Engineer  
-**Version:** 1.3.0 (Phase 1 — Step 3: Deterministic Validation Engine)  
-**Status:** Approved & Implemented Foundation, Security Hardening, & Deterministic Validation  
+**Version:** 1.4.0 (Phase 1 — Step 4: Decision Engine & Explainability)  
+**Status:** Approved & Implemented Foundation, Security Hardening, Deterministic Validation, & Decision Engine  
 
 ---
 
@@ -232,7 +232,7 @@ flowchart TD
         F1["Step 1: Foundation & Probes (IMPLEMENTED)"] --> F2["Step 2: Vendor Data Model & Submission (IMPLEMENTED)"]
         F2 --> F2_1["Step 2.1: Data Security & Reliability Hardening (IMPLEMENTED)"]
         F2_1 --> F3["Step 3: Deterministic Validation Engine (IMPLEMENTED)"]
-        F3 --> F4["Step 4: Decision Engine (PLANNED)"]
+        F3 --> F4["Step 4: Decision Engine & Explainability (IMPLEMENTED)"]
         F4 --> F5["Step 5: End-to-End Integration (PLANNED)"]
     end
 
@@ -272,7 +272,7 @@ flowchart TD
 | **Vendor Submission & Profile** | Phase 1 (Step 2) | **Implemented** | `backend/app/models/vendor.py`, `backend/app/services/vendor_service.py`, `backend/app/api/v1/endpoints/vendors.py` |
 | **Data Encryption & Reliability Hardening** | Phase 1 (Step 2.1) | **Implemented** | `backend/app/core/security.py`, `backend/app/db/migrate_encryption.py`, `backend/tests/test_security_and_reliability.py` |
 | **Deterministic Validation Engine** | Phase 1 (Step 3) | **Implemented** | `backend/app/validation/`, `backend/tests/test_validation_*.py` |
-| **Decision Engine (Approved/Pending/Rejected)** | Phase 1 (Step 4) | *Planned* | `backend/app/services/decision_service.py` |
+| **Decision Engine (Approved/Pending/Rejected)** | Phase 1 (Step 4) | **Implemented** | `backend/app/decision/`, `backend/app/services/decision_service.py` |
 | **End-to-End Core Integration** | Phase 1 (Step 5) | *Planned* | `backend/app/api/v1/endpoints/vendors.py` |
 | **Document Processing & OCR** | Phase 2 | *Planned* | `backend/app/services/document_service.py` |
 | **Human-in-the-Loop Review** | Phase 3 | *Planned* | `backend/app/services/review_service.py` |

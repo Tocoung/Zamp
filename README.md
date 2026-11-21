@@ -1,143 +1,241 @@
 # Zamp — AI-Powered Vendor Onboarding Automation
 
 > **Case Study:** Zamp AI Solutions Analyst Case Study  
-> **Phase:** 1 (Step 3 — Deterministic Validation Engine)  
+> **Phase:** 1 (Step 4 — Decision Engine & Explainability)  
 > **Status:** Fully Implemented, Unit-Tested, and Verified  
 
-An automated platform designed to streamline vendor company onboarding, compliance document extraction, multi-source verification, deterministic validation, decisioning (Approved / Pending / Rejected), and human-in-the-loop review.
+An automated platform designed to streamline vendor company onboarding, compliance document extraction, multi-source verification, deterministic validation, explainable decisioning (`APPROVED` / `PENDING` / `REJECTED`), and human-in-the-loop review.
 
 ---
 
 ## 1. Architecture & Technology Stack
 
-The project uses a clean **Modular Monolith** architecture with decoupled presentation and backend layers:
+The project uses a clean **Modular Monolith** architecture with decoupled presentation, validation, decision, and service layers:
 
 - **Frontend:** React 18 + TypeScript + Vite + Tailwind CSS + Lucide React
 - **Backend:** Python 3.9+ + FastAPI + Pydantic v2 + Uvicorn + Cryptography (Fernet)
-- **Validation Engine:** Modular, decoupled rule engine (`backend/app/validation/`) evaluating required fields, country-aware formats, and cross-field consistency.
-- **Persistence:** SQLAlchemy 2.0 (Active: SQLite with deterministic path resolution; Production interface: PostgreSQL via `DATABASE_URL` with driver)
-- **Testing:** Pytest + FastAPI TestClient (HTTPX) with temporary isolated SQLite databases (66 automated tests)
+- **Validation Engine:** Modular, decoupled rule engine (`backend/app/validation/`) evaluating required fields, country-aware statutory formats, and cross-field consistency.
+- **Decision Engine:** Deterministic business policy and explainability engine (`backend/app/decision/`) assigning `APPROVED`, `PENDING`, or `REJECTED` outcomes with stable reason codes and actionable recommendations.
+- **Persistence:** SQLAlchemy 2.0 (Active: SQLite with deterministic path resolution; Production interface: PostgreSQL via `DATABASE_URL` with driver).
+- **Audit History:** Dedicated `vendor_decisions` table preserving historical decision snapshots transactionally without duplicating sensitive banking data.
+- **Testing:** Pytest + FastAPI TestClient with temporary isolated SQLite databases (**82 automated tests passing**).
 
 Detailed architectural boundaries and module roadmaps can be found in [docs/architecture.md](docs/architecture.md).
 
 ---
 
-## 2. Deterministic Validation Engine (Step 3)
+## 2. Decision Engine & Explainability (Step 4)
 
-The validation engine resides in `backend/app/validation/` and provides a reusable, deterministic rules evaluation framework.
+The decision engine resides in `backend/app/decision/` and service layer `backend/app/services/decision_service.py`. It is a deterministic business rules engine, not an AI/LLM classifier.
 
-### A. Core Architecture & Decoupling
-- **`engine.py`:** Orchestrates evaluation across active rules, calculates summary metrics, ensures deterministic sorting, and builds the `ValidationResult`.
-- **`models.py`:** Declares structured findings (`ValidationFinding`), summary counts (`ValidationSummary`), and evaluation results (`ValidationResult`).
-- **`rules/base.py`:** Reusable `ValidationRule` abstract base class defining rule metadata, severity, target fields, and the `validate()` interface.
-- **`rules/required.py`:** Mandatory-field checks across all 19 required vendor attributes.
-- **`rules/formats.py`:** Country-aware syntax and format rules for contact info, tax identifiers, and banking routing codes.
-- **`rules/consistency.py`:** Cross-field sanity and compatibility rules.
-- **`registry.py`:** Rule registry managing rule registration and deterministic ordering.
-- **`config.py`:** Runtime configuration supporting rule enabling/disabling, ruleset versioning (`1.0.0`), and severity overrides.
+### A. Core Architecture & Separation of Concerns
+- **`models.py`:** Pydantic schemas for `DecisionStatus` (`APPROVED`, `PENDING`, `REJECTED`), `DecisionAction` (`BLOCK`, `REVIEW`, `IGNORE`), `DecisionReason`, `DecisionRecommendation`, `DecisionResult`, and `DecisionHistoryItem`.
+- **`config.py`:** Configurable action mappings (`rule_actions`, `finding_code_actions`), severity fallbacks, and independent decision versioning (`decision_version: "1.0.0"`).
+- **`rules.py`:** Evaluates validation findings into explainable reasons and actionable next steps without exposing sensitive financial details.
+- **`engine.py`:** Orchestrates decision calculation from a single `ValidationResult` snapshot, applies policy thresholds, sorts findings deterministically, and sanitizes evidence.
+- **`registry.py`:** Singleton registry providing global access and test isolation.
+- **`services/decision_service.py`:** Manages transactional persistence: runs validation exactly once, calculates the decision, updates vendor status, and records audit history.
 
-### B. Severity Semantics & Outcome Mapping
-Each finding carries a severity:
-- `ERROR`: Violation of mandatory syntax, checksum, or required fields. Prevents the submission from being valid.
-- `WARNING`: Discrepancy or unusual pattern (e.g. account holder name mismatch, cross-border routing) that warrants review, but does not strictly invalidate data syntax.
-- `INFO`: Informational notes on multinational operations or unsupported tax regimes.
+### B. Status Semantics & Decision Outcomes
 
-**Outcome Status Mapping:**
-- `PASSED`: Zero `ERROR` findings and zero `WARNING` findings (`valid: true`).
-- `PASSED_WITH_WARNINGS`: Zero `ERROR` findings, at least one `WARNING` finding (`valid: true`).
-- `FAILED`: One or more `ERROR` findings (`valid: false`).
+| Status | Business Criteria | Operational Meaning |
+|---|---|---|
+| **`APPROVED`** | Validation is `PASSED`, 0 `ERROR` findings, 0 `WARNING` findings requiring review, all mandatory checks satisfied. | All deterministic statutory formats and company consistency rules passed. *Note:* Deterministic local check only; does not claim independent tax authority verification or banking ownership guarantee. |
+| **`PENDING`** | Validation is `PASSED_WITH_WARNINGS` or finding requires human review (e.g. account holder name mismatch, tax-country mismatch). | Vendor evidence is incomplete or needs review, but is not conclusively invalid. Uncertain cases are marked `PENDING` rather than rejected to allow human-in-the-loop clarification without forcing re-registration. |
+| **`REJECTED`** | Validation `ERROR` mapped to configured blocking reason (e.g. invalid GSTIN/PAN/EIN syntax, invalid email format, invalid routing transit code or checksum, dummy bank account sequence). | Statutory format or structural banking requirements were conclusively violated. Formatting errors are reported as syntax failures, not malicious intent. |
 
-### C. Supported Jurisdictions & Initial Ruleset
-1. **Required Fields:** All 19 required fields in `VendorCreate` are validated. Empty strings and whitespace-only values fail. Optional fields (`trade_name`, `address_line2`) never fail.
-2. **Contact Formats:**
-   - Email: RFC 5322 syntax (`FMT_EMAIL_STRUCTURE`).
-   - Phone: International structural check (7–17 digits with optional `+` and separators; reachability is not queried).
-3. **Tax Identifiers:**
-   - India GSTIN: 15-character statutory format (`^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$`).
-   - India PAN: 10-character statutory format (`^[A-Z]{5}[0-9]{4}[A-Z]{1}$`).
-   - US EIN: 9 numeric digits (`^[0-9]{2}-?[0-9]{7}$`) with validation against unassigned IRS campus prefixes.
-   - UK VAT: 9 or 12 numeric digits with optional `GB` prefix (`^(?:GB)?\s*([0-9]{9}|[0-9]{12})$`).
-   - *Unsupported Tax Regimes:* Emits an `INFO` note (`TAX_FORMAT_UNSUPPORTED_NOTE`) without inventing arbitrary validation rules.
-4. **Banking Routing Identifiers:**
-   - India IFSC: 11 characters starting with 4 letters, `0`, and 6 alphanumeric characters (`^[A-Z]{4}0[A-Z0-9]{6}$`).
-   - US ABA Routing: 9 numeric digits verified against Federal Reserve Mod-10 checksum:
-     $$[3(d_1 + d_4 + d_7) + 7(d_2 + d_5 + d_8) + 1(d_3 + d_6 + d_9)] \pmod{10} = 0$$
-   - SWIFT / BIC: 8 or 11 characters (`^[A-Z]{4}[A-Z]{2}[A-Z0-9]{2}(?:[A-Z0-9]{3})?$`).
-5. **Bank Account Number Structural Checks:**
-   - Length between 6 and 34 characters (domestic accounts and IBAN).
-   - Rejection of dummy repeating sequences (`00000000`) and simple runs (`12345678`).
-   - **Zero sensitive data exposure:** The raw account number is never logged or included in finding messages.
-6. **Cross-Field Consistency:**
-   - Tax Type vs. Country: Flags GSTIN/PAN outside India or EIN outside US as `WARNING`.
-   - Routing Code vs. Bank Country: Flags IFSC outside India or ABA outside US as `WARNING`.
-   - Cross-Border Operations: Emits `INFO` note when incorporation country differs from registered address.
-   - Account Holder Name Matching: Compares token overlap against legal and trade names; mismatch emits `WARNING`.
+### C. Finding to Decision Action Mapping
 
-### D. Adding a New Validation Rule
-1. Subclass `ValidationRule` in `backend/app/validation/rules/`.
-2. Implement `validate(self, data, context, config) -> List[ValidationFinding]`.
-3. Register the rule in `backend/app/validation/registry.py` under `create_default_registry()`.
+The engine maps validation rule IDs and finding codes to one of three `DecisionAction` directives:
+- **`BLOCK` $\rightarrow$ `REJECTED`:** Hard statutory or structural failure.
+- **`REVIEW` $\rightarrow$ `PENDING`:** Discrepancy requiring operator attention or document review.
+- **`IGNORE` $\rightarrow$ `APPROVED`:** Informational note that does not impede automated onboarding.
 
-### E. Validation API Endpoints
-- `POST /api/v1/vendors/validate`: Evaluates an unsaved vendor payload (complete or partial) without database writes.
-- `POST /api/v1/vendors/{vendor_id}/validate`: Loads an existing stored vendor, decrypts the account number internally solely for structural length checks, and evaluates the record without modifying vendor status.
+| Validation Finding / Rule ID | Finding Code | Action | Decision |
+|---|---|---|---|
+| Missing mandatory field | `MISSING_*` / `REQ_*` | `BLOCK` | `REJECTED` |
+| Invalid contact email format | `INVALID_EMAIL_FORMAT` | `BLOCK` | `REJECTED` |
+| Invalid phone number format | `INVALID_PHONE_FORMAT` | `BLOCK` | `REJECTED` |
+| Malformed India GSTIN | `INVALID_GSTIN_FORMAT` | `BLOCK` | `REJECTED` |
+| Malformed India PAN | `INVALID_PAN_FORMAT` | `BLOCK` | `REJECTED` |
+| Malformed US EIN | `INVALID_EIN_FORMAT` | `BLOCK` | `REJECTED` |
+| Malformed UK VAT | `INVALID_VAT_FORMAT` | `BLOCK` | `REJECTED` |
+| Invalid bank routing / IFSC / SWIFT | `INVALID_*_FORMAT` | `BLOCK` | `REJECTED` |
+| US ABA checksum failure | `INVALID_ABA_CHECKSUM` | `BLOCK` | `REJECTED` |
+| Dummy account sequence (`00000000`) | `DUMMY_ACCOUNT_SEQUENCE` | `BLOCK` | `REJECTED` |
+| Bank account holder name mismatch | `ACCOUNT_HOLDER_NAME_MISMATCH` | `REVIEW` | `PENDING` |
+| Tax scheme vs. country mismatch | `TAX_TYPE_COUNTRY_MISMATCH` | `REVIEW` | `PENDING` |
+| Bank routing vs. country mismatch | `ROUTING_BANK_COUNTRY_MISMATCH` | `REVIEW` | `PENDING` |
+| Unusual routing number length | `UNUSUAL_ROUTING_LENGTH` | `REVIEW` | `PENDING` |
+| Cross-border incorporation/address | `CROSS_BORDER_OPERATIONS_NOTE` | `IGNORE` | `APPROVED` possible |
+| Unsupported tax regime | `UNSUPPORTED_TAX_TYPE` | `IGNORE` | `APPROVED` possible |
+| All checks pass with 0 warnings | *(None)* | — | `APPROVED` |
 
----
+### D. Audit History & Persistence Model
 
-## 3. Security & Reliability Architecture (Step 2.1)
+Decisions are persisted non-destructively in SQLite via the `vendor_decisions` table:
+- `id`: UUID (Primary Key).
+- `vendor_id`: Foreign key to `vendors.id` (ON DELETE CASCADE).
+- `status`: `APPROVED`, `PENDING`, or `REJECTED`.
+- `decision_version`: String (`1.0.0`).
+- `ruleset_version`: String (`1.0.0` from validation engine).
+- `validation_id`: Foreign reference to evaluated validation execution.
+- `validation_snapshot`: Sanitized JSON evidence containing check summaries and field findings (**strictly zero raw bank account numbers or ciphertexts**).
+- `reason_codes`: JSON array of stable programmatic reason strings.
+- `decision_explanation`: JSON object containing structured reasons and actionable recommendations.
+- `decided_at`: UTC timestamp.
 
-- **Encryption at Rest:** Bank account numbers are stored as Fernet authenticated ciphertext (`enc:v1:<token>`).
-- **Fail-Safe Startup:** If `VENDOR_DATA_ENCRYPTION_KEY` is missing or invalid, application startup aborts immediately with a `RuntimeError`.
-- **Transaction Rollback:** `VendorService.create_vendor()` executes explicit `db.rollback()` on persistence errors.
-- **Deterministic Pagination:** Composite sorting `created_at DESC, id ASC` prevents tie-breaking inconsistencies.
-- **Submission Locking:** Form submit locks immediately after submission (`Submitted (Edit to Re-submit)`), unlocking on field edit.
+**Transactional Guarantee:** `VendorDecision` insertion and `Vendor.status` mutation occur in the same database transaction. If either fails, both roll back.
 
----
+**Re-evaluation Behaviour:** Multiple decision runs against the same vendor append new audited records to `vendor_decisions` while updating `Vendor.status` to reflect the latest outcome. Previous decisions remain permanently intact.
 
-## 4. Operational Health Probes
+### E. Decision API Endpoints
 
-1. **`GET /healthz` (Liveness Probe):** Confirms application process is running (`200 OK`, `{"status": "alive"}`). Does not touch database.
-2. **`GET /readyz` (Readiness Probe):** Verifies downstream database connectivity (`200 OK` when healthy; `503 Service Unavailable` when degraded).
-3. **`GET /api/v1/health` (Frontend Diagnostic):** Returns diagnostic status, database state, environment, and version.
+- `POST /api/v1/vendors/{vendor_id}/decide`: Runs validation once, evaluates deterministic decision, persists audit record, updates vendor status, and returns `DecisionResult`.
+- `GET /api/v1/vendors/{vendor_id}/decision`: Returns the most recent `DecisionResult` for a vendor.
+- `GET /api/v1/vendors/{vendor_id}/decision-history`: Returns deterministically paginated decision history (`created_at DESC, id ASC`).
+- `GET /api/v1/vendors?status=APPROVED|PENDING|REJECTED|SUBMITTED`: Filters vendor directory by onboarding status.
 
 ---
 
-## 5. Development Setup & Testing
+## 3. Sample Decision Outputs
 
-### Backend
-```bash
-cd backend
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env
-# Run automated tests (66 tests in isolated temporary database)
-pytest tests -v
-# Start API server
-uvicorn app.main:app --port 8000 --reload
+### A. Approved Vendor (`APPROVED`)
+```json
+{
+  "decision_id": "e852d6db-6459-4cf9-aedc-941de98d50d5",
+  "vendor_id": "a550cc4b-08ce-49e9-b49c-c7c84d770753",
+  "status": "APPROVED",
+  "decision_version": "1.0.0",
+  "ruleset_version": "1.0.0",
+  "validation_id": "8d3168ae-2bc9-4d21-92e8-416ee2dfea8c",
+  "validation_status": "PASSED",
+  "reason_codes": [
+    "DETERMINISTIC_RULES_PASSED"
+  ],
+  "reasons": [
+    {
+      "code": "DETERMINISTIC_RULES_PASSED",
+      "title": "All Deterministic Validation Rules Satisfied",
+      "explanation": "Vendor data successfully satisfied all mandatory fields, statutory formats, and consistency rules without blocking issues.",
+      "severity": "INFO"
+    }
+  ],
+  "recommendations": [
+    {
+      "action": "PROCEED_WITH_ONBOARDING",
+      "description": "Vendor record satisfies all configured deterministic onboarding rules. Proceed with operational setup.",
+      "priority": "LOW"
+    }
+  ],
+  "decided_at": "2026-11-21T12:47:23.411196Z"
+}
 ```
 
-### Frontend
-```bash
-cd frontend
-npm ci
-npm run build
-npm run dev
+### B. Pending Review Vendor (`PENDING`)
+```json
+{
+  "decision_id": "2a762e8e-2aab-4df2-8930-39dec98069ff",
+  "vendor_id": "0a014de4-c63c-4684-b45e-5566d908566c",
+  "status": "PENDING",
+  "decision_version": "1.0.0",
+  "ruleset_version": "1.0.0",
+  "validation_status": "PASSED_WITH_WARNINGS",
+  "reason_codes": [
+    "ACCOUNT_HOLDER_NAME_MISMATCH"
+  ],
+  "reasons": [
+    {
+      "code": "ACCOUNT_HOLDER_NAME_MISMATCH",
+      "title": "Bank Account Holder Name Requires Review",
+      "explanation": "Bank account holder name ('Global Retail Logistics Holdings LLC') does not appear to match legal company name ('Acme Widgets Private Limited').",
+      "source_rule_id": "CONST_ACCOUNT_HOLDER_MATCH",
+      "severity": "WARNING"
+    }
+  ],
+  "recommendations": [
+    {
+      "action": "VERIFY_ACCOUNT_HOLDER",
+      "description": "Confirm the bank account belongs to the submitted legal entity, or request documentation explaining the DBA or parent company relationship.",
+      "priority": "MEDIUM"
+    }
+  ],
+  "decided_at": "2026-11-21T12:48:39.822783Z"
+}
+```
+
+### C. Rejected Vendor (`REJECTED`)
+```json
+{
+  "decision_id": "d3acec53-3a2c-4e12-a020-12dd875f4481",
+  "vendor_id": "0dc03819-badb-4b7e-a05c-f9567521e90b",
+  "status": "REJECTED",
+  "decision_version": "1.0.0",
+  "ruleset_version": "1.0.0",
+  "validation_status": "FAILED",
+  "reason_codes": [
+    "INVALID_GSTIN_FORMAT"
+  ],
+  "reasons": [
+    {
+      "code": "INVALID_GSTIN_FORMAT",
+      "title": "Statutory GSTIN Format Invalid",
+      "explanation": "GSTIN format is invalid. Expected 15-character statutory format (e.g., 29ABCDE1234F1Z5).",
+      "source_rule_id": "FMT_TAX_ID_SYNTAX",
+      "severity": "ERROR"
+    }
+  ],
+  "recommendations": [
+    {
+      "action": "VERIFY_TAX_REGISTRATION",
+      "description": "Request a verified copy of the vendor's official tax certificate and correct the statutory tax identifier.",
+      "priority": "HIGH"
+    }
+  ],
+  "decided_at": "2026-11-21T12:49:12.102806Z"
+}
 ```
 
 ---
 
-## 6. Implementation Roadmap
+## 4. Deterministic Validation Engine (Step 3 Recap)
 
-1. **Phase 1: Foundation & Core Onboarding Engine**
-   - Step 1: Project Foundation & Architecture *(Completed)*
-   - Step 1.1: Foundation Hardening & Architecture Alignment *(Completed)*
-   - Step 2: Vendor Data Model & Submission API *(Completed)*
-   - Step 2.1: Vendor Data Security & Reliability Hardening *(Completed)*
-   - Step 3: Deterministic Validation Engine *(Completed)*
-   - Step 4: Decision Engine *(Next)*
-   - Step 5: End-to-End Integration *(Planned)*
-2. **Phase 2: Intelligent Document Processing & Cross-Document Verification**
-3. **Phase 3: Exception Handling & Human-in-the-Loop Review**
-4. **Phase 4: Product Dashboard & Audit Trail**
-5. **Phase 5: Advanced Intelligence & Production Polish**
+The underlying validation engine resides in `backend/app/validation/`:
+- **Ruleset Version:** `1.0.0`
+- **28 Active Deterministic Rules:** Mandatory fields, contact formats, India GSTIN/PAN, US EIN with IRS prefix check, UK VAT, India IFSC, US ABA Mod-10 checksum, SWIFT/BIC, bank account length/dummy checks, and cross-field consistency.
+- **Privacy:** Evaluates decrypted account numbers in memory without logging or returning raw values in responses.
+- **Endpoints:**
+  - `POST /api/v1/vendors/validate`: Evaluates unsaved payloads without DB writes.
+  - `POST /api/v1/vendors/{vendor_id}/validate`: Evaluates stored vendors without status mutation.
+
+---
+
+## 5. Security & Reliability Architecture (Step 2.1 Recap)
+
+- **Encryption at Rest:** Bank account numbers are encrypted using Fernet (`AES-128-CBC + HMAC-SHA256`).
+- **Fail-Safe Startup:** If `VENDOR_DATA_ENCRYPTION_KEY` is missing or invalid, application startup aborts immediately.
+- **Masking:** API responses and UI screens only display masked account numbers (`••••••••5678`).
+- **Zero Sensitive Data in Decision History:** Raw account numbers are strictly excluded from `validation_snapshot` and decision explanations.
+
+---
+
+## 6. Health & Readiness Probes
+
+- **`GET /healthz` (Liveness):** Process check (`200 OK`, `{"status": "alive"}`).
+- **`GET /readyz` (Readiness):** Dependency probe (`200 OK` with database connected; `503 Service Unavailable` if degraded).
+
+---
+
+## 7. Verification & Test Execution
+
+### Backend Automated Test Suite
+```bash
+backend/.venv/bin/pytest backend/tests -v
+```
+**Result:** **82 passed in 3.15s** (Exit code: `0`).
+
+### Frontend Production Build
+```bash
+npm --prefix frontend run build
+```
+**Result:** Compiled successfully with Vite v5.4.21 (Exit code: `0`).

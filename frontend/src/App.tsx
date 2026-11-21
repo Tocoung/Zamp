@@ -133,10 +133,10 @@ export const App: React.FC = () => {
             <div className="bg-indigo-50/60 border border-indigo-200/80 rounded-xl p-5 text-xs text-indigo-900">
               <div className="font-semibold text-sm flex items-center mb-1 text-indigo-950">
                 <ArrowRight className="w-4 h-4 mr-1 text-indigo-700" />
-                Phase 1 — Step 3 Scope Demarcation: Deterministic Validation Engine
+                Phase 1 — Step 4 Scope Demarcation: Decision Engine & Explainability
               </div>
               <p className="text-indigo-800 leading-relaxed">
-                Step 3 establishes the Deterministic Validation Engine: evaluates vendor submission syntax, mandatory fields, international phone/email structures, country-aware tax IDs (India GSTIN & PAN, US EIN, UK VAT), bank routing transit numbers (India IFSC, US ABA with Mod-10 checksum, SWIFT/BIC), and cross-field consistency without modifying vendor records or mutating submission status. In accordance with strict incremental delivery, this is a validation engine, NOT an approval/rejection decision engine (Step 4), external registry verification, OCR extractor (Phase 2), or human review console (Phase 3).
+                Step 4 establishes the Deterministic Decision Engine: consumes the Step 3 validation engine, maps findings to business policy outcomes (APPROVED, PENDING, REJECTED), generates actionable next-step recommendations, and persists audited decision snapshots and vendor status transactionally in SQLite without duplicating sensitive banking data. In accordance with strict incremental delivery, this is a deterministic business rules engine, NOT an AI/LLM classifier, external government tax verification, OCR extractor (Phase 2), or human review override system (Phase 3).
               </p>
             </div>
           </div>

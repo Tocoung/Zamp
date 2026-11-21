@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   X,
   Building2,
@@ -13,25 +13,73 @@ import {
   Check,
   Loader2,
   AlertCircle,
+  Sparkles,
 } from 'lucide-react';
-import { VendorResponse, ValidationResult, validateExistingVendor } from '../config/api';
+import {
+  VendorResponse,
+  ValidationResult,
+  DecisionResult,
+  DecisionHistoryItem,
+  validateExistingVendor,
+  runVendorDecision,
+  getLatestDecision,
+  getDecisionHistory,
+} from '../config/api';
 import { ValidationReport } from './ValidationReport';
+import { DecisionReport } from './DecisionReport';
 
 interface VendorDetailModalProps {
   vendor: VendorResponse | null;
   isOpen: boolean;
   onClose: () => void;
+  onVendorUpdated?: (updatedVendor: VendorResponse) => void;
 }
 
 export const VendorDetailModal: React.FC<VendorDetailModalProps> = ({
-  vendor,
+  vendor: initialVendor,
   isOpen,
   onClose,
+  onVendorUpdated,
 }) => {
-  const [copied, setCopied] = React.useState(false);
-  const [isValidating, setIsValidating] = React.useState(false);
-  const [validationResult, setValidationResult] = React.useState<ValidationResult | null>(null);
-  const [validationError, setValidationError] = React.useState<string | null>(null);
+  const [vendor, setVendor] = useState<VendorResponse | null>(initialVendor);
+  const [copied, setCopied] = useState(false);
+
+  // Validation state
+  const [isValidating, setIsValidating] = useState(false);
+  const [validationResult, setValidationResult] = useState<ValidationResult | null>(null);
+  const [validationError, setValidationError] = useState<string | null>(null);
+
+  // Decision engine state
+  const [isEvaluatingDecision, setIsEvaluatingDecision] = useState(false);
+  const [decisionResult, setDecisionResult] = useState<DecisionResult | null>(null);
+  const [decisionHistory, setDecisionHistory] = useState<DecisionHistoryItem[]>([]);
+  const [decisionError, setDecisionError] = useState<string | null>(null);
+
+  // Sync internal vendor state when prop updates
+  useEffect(() => {
+    setVendor(initialVendor);
+    setValidationResult(null);
+    setValidationError(null);
+    setDecisionResult(null);
+    setDecisionError(null);
+
+    if (initialVendor && isOpen) {
+      loadDecisionData(initialVendor.id);
+    }
+  }, [initialVendor, isOpen]);
+
+  const loadDecisionData = async (vendorId: string) => {
+    try {
+      const [latest, historyData] = await Promise.all([
+        getLatestDecision(vendorId),
+        getDecisionHistory(vendorId, 1, 10).catch(() => ({ items: [] })),
+      ]);
+      setDecisionResult(latest);
+      setDecisionHistory(historyData?.items || []);
+    } catch {
+      // Ignore initial load failure if vendor has no decision yet
+    }
+  };
 
   if (!isOpen || !vendor) return null;
 
@@ -55,6 +103,61 @@ export const VendorDetailModal: React.FC<VendorDetailModalProps> = ({
     }
   };
 
+  const handleRunDecision = async () => {
+    if (!vendor) return;
+    setIsEvaluatingDecision(true);
+    setDecisionError(null);
+    try {
+      const decision = await runVendorDecision(vendor.id);
+      setDecisionResult(decision);
+
+      // Update local vendor status
+      const updated = { ...vendor, status: decision.status };
+      setVendor(updated);
+      if (onVendorUpdated) {
+        onVendorUpdated(updated);
+      }
+
+      // Refresh history
+      const historyData = await getDecisionHistory(vendor.id, 1, 10);
+      setDecisionHistory(historyData.items);
+    } catch (err: any) {
+      setDecisionError(err.message || 'Decision calculation failed');
+    } finally {
+      setIsEvaluatingDecision(false);
+    }
+  };
+
+  const getStatusBadge = (status: string) => {
+    switch (status) {
+      case 'APPROVED':
+        return (
+          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+            APPROVED
+          </span>
+        );
+      case 'PENDING':
+        return (
+          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-amber-50 text-amber-700 border border-amber-200">
+            PENDING
+          </span>
+        );
+      case 'REJECTED':
+        return (
+          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-rose-50 text-rose-700 border border-rose-200">
+            REJECTED
+          </span>
+        );
+      case 'SUBMITTED':
+      default:
+        return (
+          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-sky-50 text-sky-700 border border-sky-200">
+            {status}
+          </span>
+        );
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
       <div className="bg-white rounded-2xl max-w-3xl w-full shadow-2xl border border-slate-200 overflow-hidden animate-in fade-in zoom-in-95 duration-200">
@@ -69,9 +172,7 @@ export const VendorDetailModal: React.FC<VendorDetailModalProps> = ({
                 <h3 className="text-base font-bold text-slate-900">
                   {vendor.legal_name}
                 </h3>
-                <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-sky-50 text-sky-700 border border-sky-200">
-                  {vendor.status}
-                </span>
+                {getStatusBadge(vendor.status)}
               </div>
               <div className="flex items-center gap-2 text-xs text-slate-500 mt-0.5">
                 <span className="font-mono">{vendor.id}</span>
@@ -92,20 +193,43 @@ export const VendorDetailModal: React.FC<VendorDetailModalProps> = ({
           </div>
 
           <div className="flex items-center gap-2">
+            {/* Run / Re-evaluate Decision Button */}
+            <button
+              type="button"
+              onClick={handleRunDecision}
+              disabled={isEvaluatingDecision}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600 hover:bg-indigo-700 text-white shadow-xs transition-colors disabled:opacity-50"
+            >
+              {isEvaluatingDecision ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span>Evaluating...</span>
+                </>
+              ) : (
+                <>
+                  <Sparkles className="w-3.5 h-3.5 text-indigo-200" />
+                  <span>
+                    {decisionResult ? 'Re-evaluate Decision' : 'Run Decision'}
+                  </span>
+                </>
+              )}
+            </button>
+
+            {/* Validate Button */}
             <button
               type="button"
               onClick={handleRunValidation}
               disabled={isValidating}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 transition-colors disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 transition-colors disabled:opacity-50"
             >
               {isValidating ? (
                 <>
-                  <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-600" />
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-slate-600" />
                   <span>Validating...</span>
                 </>
               ) : (
                 <>
-                  <ShieldCheck className="w-3.5 h-3.5 text-indigo-600" />
+                  <ShieldCheck className="w-3.5 h-3.5 text-slate-600" />
                   <span>Validate Record</span>
                 </>
               )}
@@ -123,6 +247,24 @@ export const VendorDetailModal: React.FC<VendorDetailModalProps> = ({
 
         {/* Modal Body */}
         <div className="p-6 space-y-6 max-h-[75vh] overflow-y-auto">
+          {/* Decision Error Alert */}
+          {decisionError && (
+            <div className="p-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+              <span>{decisionError}</span>
+            </div>
+          )}
+
+          {/* Decision Engine Result Card */}
+          {decisionResult && (
+            <DecisionReport
+              decision={decisionResult}
+              history={decisionHistory}
+              onReevaluate={handleRunDecision}
+              isEvaluating={isEvaluatingDecision}
+            />
+          )}
+
           {/* Validation Report Banner */}
           {validationResult && (
             <ValidationReport
@@ -139,6 +281,7 @@ export const VendorDetailModal: React.FC<VendorDetailModalProps> = ({
               <span>{validationError}</span>
             </div>
           )}
+
           {/* Section 1: Company Identity */}
           <div className="space-y-2">
             <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">

@@ -45,6 +45,7 @@ async def lifespan(app: FastAPI):
         from app.db.base import Base
         from app.db.session import engine, SessionLocal
         from app.models.vendor import Vendor  # noqa: F401 - ensure vendor model registered
+        from app.models.decision import VendorDecision  # noqa: F401 - ensure decision model registered
         Base.metadata.create_all(bind=engine)
         logger.info("Database schema verified and initialized.")
     except Exception as e:

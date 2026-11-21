@@ -18,6 +18,15 @@ from app.validation import (
     VendorValidationRequest,
     validation_engine,
 )
+from app.decision import (
+    DecisionResult,
+    DecisionHistoryPagination,
+)
+from app.services.decision_service import (
+    decision_service,
+    VendorNotFoundError,
+    DecisionServiceError,
+)
 
 router = APIRouter()
 
@@ -73,11 +82,13 @@ def create_vendor(
 def list_vendors(
     page: int = Query(1, ge=1, description="Page number starting at 1"),
     page_size: int = Query(10, ge=1, le=100, description="Number of records per page"),
+    status: str = Query(None, description="Filter by onboarding status (SUBMITTED, APPROVED, PENDING, REJECTED)"),
+    search: str = Query(None, description="Search term matching company name, email, or country"),
     db: Session = Depends(get_db),
 ) -> VendorPagination:
-    """Retrieve paginated vendor list."""
+    """Retrieve paginated vendor list with optional status and text filters."""
     vendors, total_count, total_pages = vendor_service.get_vendors_paginated(
-        db=db, page=page, page_size=page_size
+        db=db, page=page, page_size=page_size, status=status, search=search
     )
     items = [VendorSummary.model_validate(v) for v in vendors]
     return VendorPagination(
@@ -175,3 +186,88 @@ def validate_existing_vendor(
         vendor_id=vendor.id,
         context={"is_stored_record": True, "stored_status": vendor.status},
     )
+
+
+@router.post(
+    "/{vendor_id}/decide",
+    response_model=DecisionResult,
+    status_code=status.HTTP_200_OK,
+    summary="Compute and Persist Vendor Decision",
+    description="Runs validation once, evaluates deterministic decision rules, persists an audited decision snapshot, and updates vendor onboarding status transactionally.",
+)
+def compute_vendor_decision(
+    vendor_id: str,
+    db: Session = Depends(get_db),
+) -> DecisionResult:
+    """Evaluate and commit an explainable decision for a vendor."""
+    try:
+        return decision_service.run_decision_for_vendor(db=db, vendor_id=vendor_id)
+    except VendorNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Vendor with ID '{vendor_id}' not found",
+        )
+    except DecisionServiceError as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e),
+        )
+
+
+@router.get(
+    "/{vendor_id}/decision",
+    response_model=DecisionResult,
+    status_code=status.HTTP_200_OK,
+    summary="Get Latest Vendor Decision",
+    description="Retrieves the most recent decision result, reason codes, explanations, and recommendations for a vendor.",
+)
+def get_latest_vendor_decision(
+    vendor_id: str,
+    db: Session = Depends(get_db),
+) -> DecisionResult:
+    """Retrieve the latest decision result for a vendor."""
+    try:
+        decision = decision_service.get_latest_decision(db=db, vendor_id=vendor_id)
+        if not decision:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"No decision has been recorded for vendor '{vendor_id}'",
+            )
+        return decision
+    except VendorNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Vendor with ID '{vendor_id}' not found",
+        )
+
+
+@router.get(
+    "/{vendor_id}/decision-history",
+    response_model=DecisionHistoryPagination,
+    status_code=status.HTTP_200_OK,
+    summary="Get Vendor Decision History",
+    description="Returns deterministically paginated decision history for a vendor.",
+)
+def get_vendor_decision_history(
+    vendor_id: str,
+    page: int = Query(1, ge=1, description="Page number starting at 1"),
+    page_size: int = Query(10, ge=1, le=100, description="Records per page"),
+    db: Session = Depends(get_db),
+) -> DecisionHistoryPagination:
+    """Retrieve decision audit history for a vendor."""
+    try:
+        items, total_count, total_pages = decision_service.get_decision_history(
+            db=db, vendor_id=vendor_id, page=page, page_size=page_size
+        )
+        return DecisionHistoryPagination(
+            items=items,
+            total=total_count,
+            page=page,
+            page_size=page_size,
+            total_pages=total_pages,
+        )
+    except VendorNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Vendor with ID '{vendor_id}' not found",
+        )

@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime, timezone
 from sqlalchemy import String, DateTime, Index
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 from app.db.base import Base
 
@@ -70,6 +70,14 @@ class Vendor(Base):
         server_default=func.now(),
         onupdate=func.now(),
         nullable=False,
+    )
+
+    # Decisions history relationship
+    decisions = relationship(
+        "VendorDecision",
+        back_populates="vendor",
+        cascade="all, delete-orphan",
+        order_by="desc(VendorDecision.decided_at)",
     )
 
     __table_args__ = (
