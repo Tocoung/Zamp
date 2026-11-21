@@ -10,8 +10,16 @@ import {
   Loader2,
   Sparkles,
   RotateCcw,
+  ShieldCheck,
 } from 'lucide-react';
-import { createVendor, VendorCreatePayload, VendorResponse } from '../config/api';
+import {
+  createVendor,
+  validateVendorPayload,
+  VendorCreatePayload,
+  VendorResponse,
+  ValidationResult,
+} from '../config/api';
+import { ValidationReport } from './ValidationReport';
 
 interface VendorFormProps {
   onVendorCreated?: (vendor: VendorResponse) => void;
@@ -83,6 +91,22 @@ export const VendorForm: React.FC<VendorFormProps> = ({
   const [isLocked, setIsLocked] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [createdVendor, setCreatedVendor] = useState<VendorResponse | null>(null);
+  const [isValidating, setIsValidating] = useState(false);
+  const [validationResult, setValidationResult] = useState<ValidationResult | null>(null);
+  const [validationError, setValidationError] = useState<string | null>(null);
+
+  const handleRunValidation = async () => {
+    setIsValidating(true);
+    setValidationError(null);
+    try {
+      const res = await validateVendorPayload(formData);
+      setValidationResult(res);
+    } catch (err: any) {
+      setValidationError(err.message || 'Validation evaluation failed');
+    } finally {
+      setIsValidating(false);
+    }
+  };
 
   const handleChange = (
     e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>
@@ -98,6 +122,8 @@ export const VendorForm: React.FC<VendorFormProps> = ({
     setCreatedVendor(null);
     setError(null);
     setIsLocked(false);
+    setValidationResult(null);
+    setValidationError(null);
   };
 
   const handleReset = () => {
@@ -105,6 +131,8 @@ export const VendorForm: React.FC<VendorFormProps> = ({
     setCreatedVendor(null);
     setError(null);
     setIsLocked(false);
+    setValidationResult(null);
+    setValidationError(null);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -168,6 +196,19 @@ export const VendorForm: React.FC<VendorFormProps> = ({
         <div className="flex items-center gap-2">
           <button
             type="button"
+            onClick={handleRunValidation}
+            disabled={isValidating}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-indigo-50 text-indigo-700 border border-indigo-200 hover:bg-indigo-100 transition-colors"
+          >
+            {isValidating ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-600" />
+            ) : (
+              <ShieldCheck className="w-3.5 h-3.5 text-indigo-600" />
+            )}
+            <span>Validate Form</span>
+          </button>
+          <button
+            type="button"
             onClick={handleFillDemoData}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-sky-50 text-sky-700 border border-sky-200 hover:bg-sky-100 transition-colors"
           >
@@ -184,6 +225,25 @@ export const VendorForm: React.FC<VendorFormProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Pre-Submission Validation Report */}
+      {validationResult && (
+        <div className="m-6">
+          <ValidationReport
+            result={validationResult}
+            onClose={() => setValidationResult(null)}
+            title="Pre-Submission Validation Check"
+          />
+        </div>
+      )}
+
+      {/* Validation Request Error */}
+      {validationError && (
+        <div className="m-6 p-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-center gap-2">
+          <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+          <span>{validationError}</span>
+        </div>
+      )}
 
       {/* Success Notification */}
       {createdVendor && (
@@ -622,6 +682,24 @@ export const VendorForm: React.FC<VendorFormProps> = ({
             )}
           </div>
           <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={handleRunValidation}
+              disabled={isValidating || isSubmitting}
+              className="inline-flex items-center gap-1.5 px-4 py-2 border border-indigo-200 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-lg text-xs font-semibold transition-colors disabled:opacity-50"
+            >
+              {isValidating ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-600" />
+                  <span>Validating...</span>
+                </>
+              ) : (
+                <>
+                  <ShieldCheck className="w-3.5 h-3.5 text-indigo-600" />
+                  <span>Pre-Submission Check</span>
+                </>
+              )}
+            </button>
             <button
               type="button"
               onClick={handleReset}

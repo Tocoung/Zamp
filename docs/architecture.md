@@ -2,8 +2,8 @@
 ## Architecture Design Document — Vendor Onboarding Automation
 
 **Author:** Lead Software Engineer  
-**Version:** 1.2.0 (Phase 1 — Step 2.1 Hardening Iteration)  
-**Status:** Approved & Implemented Foundation & Security Hardening  
+**Version:** 1.3.0 (Phase 1 — Step 3: Deterministic Validation Engine)  
+**Status:** Approved & Implemented Foundation, Security Hardening, & Deterministic Validation  
 
 ---
 
@@ -28,6 +28,7 @@ This architecture has been designed from day one to scale through five progressi
 | **Frontend Framework** | **React 18 + TypeScript** | Next.js, Vue 3 | React with TypeScript provides industry-standard stability, compile-time type safety across complex vendor state trees, strong UI ecosystem, and fast client-side rendering. For an operational workflow portal, a Vite-backed SPA avoids server-side rendering (SSR) overhead and edge runtime constraints. |
 | **Styling** | **Tailwind CSS** | Material UI, CSS Modules | High-velocity development, zero runtime style overhead, predictable layout control, and unified design token primitives suitable for high-density enterprise review consoles. |
 | **Backend Framework** | **Python (FastAPI) + Uvicorn** | Node.js (Express/Nest), Go | FastAPI offers native async performance, automatic OpenAPI/Swagger documentation generation (`/docs`), strict data validation with Pydantic v2, and direct first-class compatibility with the Python AI/ML ecosystem (LangChain, LlamaIndex, PyMuPDF, OCR engines, Gemini/OpenAI SDKs). |
+| **Validation Engine** | **Modular Rule Engine (`app/validation/`)** | JSONSchema, Cerberus | Pure, deterministic rule-based evaluation architecture. Decouples rule definitions from orchestration, collects all findings without short-circuiting, produces reproducible ordering, and supports dynamic configuration and severity overrides without database dependencies. |
 | **Data Validation** | **Pydantic v2 + pydantic-settings** | Marshmallow, Cerberus | Native FastAPI integration, high-speed C-based core (`pydantic-core`), explicit schemas for API request/response contracts, and fail-fast environment variable validation. |
 | **Persistence / ORM** | **SQLAlchemy 2.0** | Raw SQL, Tortoise ORM | Modern typing, complete database-agnostic abstraction, Unit of Work and Repository pattern support, and clean migration paths. |
 | **Database Engine** | **SQLite (Active Dev) / PostgreSQL (Production Target)** | MongoDB, DynamoDB | Relational integrity is mandatory for compliance, vendor state machines, and relational audit logging. **SQLite is the currently active and fully installed driver** (`sqlite3` standard library), providing zero-dependency local development and predictable absolute path resolution. **PostgreSQL is supported via configuration interface** (`DATABASE_URL`), but running against PostgreSQL requires installing a compatible production DBAPI driver (such as `psycopg2-binary` or `asyncpg`). |
@@ -47,8 +48,9 @@ The application adopts a **Modular Monolith** architecture. Microservices are de
 |  React 18 + TypeScript (Vite + Tailwind CSS)                                      |
 |  +-------------------------+  +-------------------------+  +--------------------+ |
 |  | Vendor Intake Portal    |  | Compliance Review Ops   |  | Audit Trail & Logs | |
-|  | - Accidental burst lock |  | - Accurate security     |  |                    | |
-|  | - Instant edit-unlock   |  |   disclosure badge      |  |                    | |
+|  | - Pre-submission check |  | - Live record validation|  |                    | |
+|  | - Interactive findings  |  | - Accurate security     |  |                    | |
+|  | - Accidental burst lock |  |   disclosure badge      |  |                    | |
 |  +-------------------------+  +-------------------------+  +--------------------+ |
 +------------------------------------------+----------------------------------------+
                                            | HTTP / REST (JSON)
@@ -59,9 +61,10 @@ The application adopts a **Modular Monolith** architecture. Microservices are de
 |  FastAPI Routing & Lifecycle (`backend/app/api/`)                                 |
 |  +-----------------------------------------------------------------------------+  |
 |  | Operational Probes: /healthz (Liveness) | /readyz (Readiness)                |  |
+|  | Validation Endpoints: POST /vendors/validate | POST /vendors/{id}/validate  |  |
 |  | Diagnostic API: /api/v1/health (Frontend Status)                             |  |
-|  | Startup Lifespan: Fail-fast validation of DB connectivity & schema          |  |
-|  | CORS Middleware | Pydantic Request Validation | Auth & RBAC (Future)        |  |
+|  | Startup Lifespan: Fail-fast validation of DB connectivity & encryption key   |  |
+|  | CORS Middleware | Pydantic Request Validation                               |  |
 |  +-----------------------------------------------------------------------------+  |
 +------------------------------------------+----------------------------------------+
                                            |
@@ -69,16 +72,17 @@ The application adopts a **Modular Monolith** architecture. Microservices are de
 +-----------------------------------------------------------------------------------+
 |                              BUSINESS / SERVICE TIER                              |
 |                                                                                   |
-|  Decoupled Pure Domain Logic (`backend/app/services/`)                            |
-|  +-----------------------+ +-----------------------+ +--------------------------+ |
-|  | Vendor Intake Service | | Document OCR & Storage| | Cross-Validation Service | |
-|  | - Explicit rollback   | |                       | |                          | |
-|  | - At-rest encryption  | |                       | |                          | |
-|  | - Deterministic sort  | |                       | |                          | |
-|  +-----------------------+ +-----------------------+ +--------------------------+ |
-|  +-----------------------+ +-----------------------+ +--------------------------+ |
-|  | Decision Engine       | | Human Review Service  | | Audit Logging Service    | |
-|  +-----------------------+ +-----------------------+ +--------------------------+ |
+|  Decoupled Pure Domain Logic (`backend/app/services/` & `app/validation/`)        |
+|  +-------------------------+ +-------------------------+ +----------------------+ |
+|  | Vendor Intake Service   | | Validation Engine       | | Document OCR & Store | |
+|  | - Explicit rollback     | | - Required field rules  | | (Planned Phase 2)    | |
+|  | - At-rest encryption    | | - Format rules (tax/rt) | |                      | |
+|  | - Deterministic sort    | | - Consistency rules     | |                      | |
+|  +-------------------------+ +-------------------------+ +----------------------+ |
+|  +-------------------------+ +-------------------------+ +----------------------+ |
+|  | Decision Engine         | | Human Review Service    | | Audit Logging Service| |
+|  | (Planned Step 4)        | | (Planned Phase 3)       | | (Planned Phase 4)    | |
+|  +-------------------------+ +-------------------------+ +----------------------+ |
 +------------------------------------------+----------------------------------------+
                                            |
                                            v
@@ -124,82 +128,110 @@ To comply with enterprise operations and container orchestrator standards (e.g. 
 
 ---
 
-## 5. Security & Reliability Architecture (Step 2.1 Hardening)
+## 5. Security & Reliability Architecture
 
 ### A. Bank Account Number Authenticated Encryption at Rest
 Financial account numbers are sensitive financial data that must never be persisted in plaintext.
-1. **Cryptographic Algorithm:** Fernet symmetric encryption from the standard `cryptography` library. Under the hood, Fernet uses:
-   - AES-128 in CBC mode with PKCS7 padding.
-   - HMAC with SHA-256 for authenticated message integrity and authenticity verification.
-   - URL-safe base64 encoding.
-2. **Versioned Storage Format:** Ciphertexts are stored with an explicit version prefix:
-   `enc:v1:<fernet_token>`
-   This prefix guarantees clear distinguishability between encrypted records and legacy plaintext data, enabling safe, non-destructive migrations.
-3. **Fail-Safe Key Management:**
-   - Key is loaded via `VENDOR_DATA_ENCRYPTION_KEY` environment variable.
-   - If the key is missing, empty, or structurally invalid base64, `EncryptionConfigurationError` is raised immediately.
-   - **Zero Plaintext Fallback:** The system strictly refuses to store data in plaintext when encryption is unconfigured.
-4. **Data Protection In-Flight & In API Responses:**
-   - Raw account numbers are decrypted strictly within memory in `VendorResponse.from_orm_model()`, immediately masked (e.g., `•••• •••• •••• 1234`), and discarded.
-   - Raw account numbers are never returned in any response, never written to logs, and never included in exception messages or tracebacks.
-5. **Production vs. Prototype Key Architecture:**
-   - *Prototype / Local:* 32-byte URL-safe base64 key injected via environment variable.
-   - *Production Target:* Key Management Service (AWS KMS, GCP Cloud KMS, HashiCorp Vault) with automated envelope encryption, per-vendor data keys, key rotation, and hardware security module (HSM) compliance.
-
-### B. Legacy Database Migration Strategy
-To ensure zero data loss during the transition from plaintext to ciphertext:
-- Column `bank_account_number` has been expanded to `String(255)` to accommodate Fernet ciphertext.
-- A dedicated, non-destructive migration utility (`backend/app/db/migrate_encryption.py` and `migrate_legacy_vendor_accounts()`) detects records lacking the `enc:v1:` prefix, encrypts them in place, and commits the transaction.
-- The migration is 100% idempotent and safe to run repeatedly.
-
-### C. Startup Reliability & Lifespan Guarantees
-- The application lifespan handler verifies database connectivity and schema presence on process startup.
-- If the database is unreachable or schema creation fails, the application raises a `RuntimeError` and terminates startup immediately.
-- This ensures orchestrators (e.g. Kubernetes) do not route traffic to misconfigured instances.
-
-### D. Transaction Resilience & Rollback Integrity
-- `VendorService.create_vendor()` explicitly wraps the database commit in a `try...except` block.
-- On any database integrity, locking, or persistence error, an explicit `db.rollback()` is executed immediately, returning a clean `VendorServiceError` and mapping to HTTP 500 without leaking raw SQL, connection details, or financial data.
-
-### E. Deterministic Pagination Ordering
-- Vendor listing queries (`VendorService.get_vendors_paginated()`) employ a composite sort key:
-  `.order_by(Vendor.created_at.desc(), Vendor.id.asc())`
-- This ensures completely stable page ordering and prevents duplicate or omitted records when multiple vendors share the exact same `created_at` timestamp.
-
-### F. Frontend Submission Reliability & UX Safeguards
-- **Accidental Re-submission Locking:** Once a vendor submission is submitted, the form is locked (`isLocked=true`), and the button displays `"Submitted (Edit to Re-submit)"`. Any user edit immediately unlocks the button.
-- **Security Messaging Transparency:** Modal security disclosures accurately state that *only* the bank account number is encrypted at rest using Fernet, while routing identifiers and tax IDs remain unencrypted.
+1. **Cryptographic Algorithm:** Fernet symmetric encryption from `cryptography==50.0.2` (AES-128-CBC + PKCS7 padding + HMAC-SHA256 authenticated integrity).
+2. **Versioned Storage Format:** Stored with an explicit version prefix `enc:v1:<fernet_token>`.
+3. **Fail-Safe Startup Verification:** During `lifespan()`, `get_fernet_cipher()` verifies `VENDOR_DATA_ENCRYPTION_KEY`. If absent or malformed, the application aborts startup immediately with `RuntimeError`.
+4. **Data Protection In-Flight & In API Responses:** Raw account numbers are decrypted in memory strictly when required for validation structural length checks or response masking, and immediately discarded. Never emitted in API payloads, logs, or exceptions.
 
 ---
 
-## 6. Testing Infrastructure & Database Isolation
+## 6. Deterministic Validation Engine Architecture (Step 3)
 
-Automated test execution is strictly decoupled from the development database:
-1. **Isolated Session Fixture:** Pytest dynamically creates a temporary directory and SQLite database file per test session (`tmp_path_factory.mktemp("zamp_test_data") / "isolated_test_onboarding.db"`).
-2. **Dependency Overrides:** FastAPI `app.dependency_overrides[get_db]` injects the temporary session into all endpoint calls.
-3. **No Development Database Contamination:** Tests never read or write to `vendor_onboarding.db`. An explicit isolation test verifies that development database files remain untouched.
-4. **Comprehensive Security Test Suite:** 14 automated tests (`backend/tests/test_security_and_reliability.py`) specifically assert:
-   - Roundtrip encryption/decryption.
-   - Version prefix enforcement (`enc:v1:`).
-   - Tamper/corruption detection (raising `DecryptionError` without treating corrupt data as plaintext).
-   - Fail-fast on missing/invalid keys.
-   - Non-destructive legacy migration idempotency.
-   - Rollback on database commit exceptions.
-   - Deterministic pagination tie-breaking.
-   - Startup failure on database degradation.
+The validation engine resides in `backend/app/validation/` and operates as a decoupled, deterministic subsystem.
+
+```text
+backend/app/validation/
+├── __init__.py           # Package exports
+├── config.py             # ValidationConfig & ruleset versioning
+├── engine.py             # ValidationEngine orchestrator
+├── models.py             # Structured result, summary & finding models
+├── registry.py           # RuleRegistry & default rule catalog
+└── rules/
+    ├── base.py           # ValidationRule abstract base class
+    ├── required.py       # Mandatory-field rules
+    ├── formats.py        # Format rules (email, phone, tax ID, routing, account)
+    └── consistency.py    # Cross-field consistency rules
+```
+
+### A. Core Design Principles
+1. **Separation of Validation from Decisioning:**
+   The engine performs **verification of syntax, completeness, and consistency**. It does **NOT** issue business decisions (`Approved` or `Rejected`) or mutate vendor status (which belongs to Step 4).
+2. **Deterministic Output & Reproducibility:**
+   Rules execute in a strictly defined category order (`required` $\to$ `format` $\to$ `consistency`). Findings are deterministically sorted by `Severity (ERROR -> WARNING -> INFO)` $\to$ `field` $\to$ `rule_id` $\to$ `code`.
+3. **Exhaustive Evaluation (No Short-Circuiting):**
+   All applicable rules are evaluated across the entire payload. The engine collects all errors, warnings, and informational notes in a single run.
+4. **Zero Mutation & Zero Sensitive Leakage:**
+   Input payloads are copied without modifying the caller's objects. Raw account numbers and credentials never appear in finding messages or suggestions.
+
+### B. Severity Semantics & Outcome Mapping
+Each finding carries a severity:
+- `ERROR`: Violation of a mandatory statutory requirement, syntax rule, or checksum. Prevents a submission from being considered valid.
+- `WARNING`: Discrepancy or unusual pattern (e.g., entity name vs. bank account holder mismatch, cross-jurisdiction routing) that warrants review or documentation, but does not strictly invalidate data syntax.
+- `INFO`: Informational note regarding multinational operations or unsupported tax regimes.
+
+**Outcome Status Semantics:**
+- `PASSED`: Zero `ERROR` findings and zero `WARNING` findings (`valid: true`).
+- `PASSED_WITH_WARNINGS`: Zero `ERROR` findings, but at least one `WARNING` finding (`valid: true`).
+- `FAILED`: One or more `ERROR` findings (`valid: false`).
+
+### C. Supported Jurisdictions & Rule Specifications
+
+1. **Required Fields (19 Mandatory Attributes):**
+   - Company: `legal_name`, `business_type`, `country_of_incorporation`, `registration_number`.
+   - Contact: `contact_name`, `contact_email`, `contact_phone`.
+   - Address: `address_line1`, `city`, `state_province`, `postal_code`, `address_country`.
+   - Tax: `tax_id_type`, `tax_id_number`.
+   - Banking: `bank_account_holder_name`, `bank_name`, `bank_account_number`, `bank_routing_number`, `bank_country`.
+   - *Optional:* `trade_name`, `address_line2` (never fail required checks).
+
+2. **Format Validation Rules:**
+   - **Email (`FMT_EMAIL_STRUCTURE`):** RFC 5322 syntax validation.
+   - **Phone (`FMT_PHONE_INTERNATIONAL`):** International structural check (7–17 digits, optional `+` and separators). Does not claim reachability.
+   - **India GSTIN (`FMT_TAX_ID_SYNTAX`):** 15-character statutory regex (`^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$`).
+   - **India PAN (`FMT_TAX_ID_SYNTAX`):** 10-character statutory regex (`^[A-Z]{5}[0-9]{4}[A-Z]{1}$`).
+   - **US EIN (`FMT_TAX_ID_SYNTAX`):** 9-digit format (`^[0-9]{2}-?[0-9]{7}$`) with validation against unassigned IRS campus prefixes (`00`, `07`, `08`, `09`, etc.).
+   - **UK VAT (`FMT_TAX_ID_SYNTAX`):** Standard 9-digit or 12-digit branch UK VAT numbers (`^(?:GB)?\s*([0-9]{9}|[0-9]{12})$`).
+   - **India IFSC (`FMT_BANK_ROUTING`):** 11 characters (`^[A-Z]{4}0[A-Z0-9]{6}$`).
+   - **US ABA Routing (`FMT_BANK_ROUTING`):** 9 numeric digits validated against the Federal Reserve Mod-10 weighting algorithm:
+     $$[3(d_1 + d_4 + d_7) + 7(d_2 + d_5 + d_8) + 1(d_3 + d_6 + d_9)] \pmod{10} = 0$$
+   - **SWIFT/BIC (`FMT_BANK_ROUTING`):** 8 or 11 characters (`^[A-Z]{4}[A-Z]{2}[A-Z0-9]{2}(?:[A-Z0-9]{3})?$`).
+   - **Bank Account Structural (`FMT_BANK_ACCOUNT_STRUCTURAL`):** Length between 6 and 34 characters; rejects repeated dummy sequences (e.g. `00000000`) or ascending runs (`12345678`).
+
+3. **Consistency Rules:**
+   - **Tax Type vs. Country (`CONST_TAX_TYPE_COUNTRY`):** Flags mismatch (e.g. GSTIN/PAN outside India, EIN outside US, VAT in US) as `WARNING`.
+   - **Routing vs. Bank Country (`CONST_ROUTING_BANK_COUNTRY`):** Flags IFSC outside India or ABA outside US as `WARNING`.
+   - **Cross-Border Setup (`CONST_CROSS_BORDER_REGISTRATION`):** Emits an `INFO` note when incorporation country differs from registered address country.
+   - **Account Holder Matching (`CONST_ACCOUNT_HOLDER_MATCH`):** Compares normalized token overlap between account holder name and legal/trade name. Mismatch emits a `WARNING`.
+
+4. **Unsupported Validation Regimes:**
+   When a tax regime or routing scheme is not among the initial certified sets (e.g. Australian ABN or Canadian transit numbers), the engine emits a clear `INFO` finding (`TAX_FORMAT_UNSUPPORTED_NOTE`) rather than inventing arbitrary validation rules.
+
+### D. How to Add a New Rule
+1. Subclass `ValidationRule` in `backend/app/validation/rules/`.
+2. Define `rule_id`, `name`, `description`, `default_severity`, `target_fields`, and `category`.
+3. Implement `validate(self, data, context, config) -> List[ValidationFinding]`.
+4. Register the rule in `backend/app/validation/registry.py` under `create_default_registry()`.
+
+### E. Validation API Endpoints
+- `POST /api/v1/vendors/validate`: Evaluates an unsaved vendor payload (complete or partial) without database interaction.
+- `POST /api/v1/vendors/{vendor_id}/validate`: Loads an existing vendor, decrypts banking information in memory solely for structural validation, and evaluates the record without modifying vendor status or writing to the database.
 
 ---
 
 ## 7. Five-Phase Implementation Roadmap
 
-The project follows a strict, incremental implementation sequence. Boundaries are maintained between implemented foundation code and planned features:
+Boundaries are strictly maintained between completed steps and planned future modules:
 
 ```mermaid
 flowchart TD
     subgraph P1["Phase 1: Foundation & Core Onboarding Engine"]
         F1["Step 1: Foundation & Probes (IMPLEMENTED)"] --> F2["Step 2: Vendor Data Model & Submission (IMPLEMENTED)"]
         F2 --> F2_1["Step 2.1: Data Security & Reliability Hardening (IMPLEMENTED)"]
-        F2_1 --> F3["Step 3: Deterministic Validation (NEXT)"]
+        F2_1 --> F3["Step 3: Deterministic Validation Engine (IMPLEMENTED)"]
         F3 --> F4["Step 4: Decision Engine (PLANNED)"]
         F4 --> F5["Step 5: End-to-End Integration (PLANNED)"]
     end
@@ -239,7 +271,7 @@ flowchart TD
 | **Frontend Application Shell** | Phase 1 (Step 1) | **Implemented** | `frontend/src/App.tsx`, `frontend/src/components/` |
 | **Vendor Submission & Profile** | Phase 1 (Step 2) | **Implemented** | `backend/app/models/vendor.py`, `backend/app/services/vendor_service.py`, `backend/app/api/v1/endpoints/vendors.py` |
 | **Data Encryption & Reliability Hardening** | Phase 1 (Step 2.1) | **Implemented** | `backend/app/core/security.py`, `backend/app/db/migrate_encryption.py`, `backend/tests/test_security_and_reliability.py` |
-| **Deterministic Validation Engine** | Phase 1 (Step 3) | *Planned* | `backend/app/services/validation_service.py` |
+| **Deterministic Validation Engine** | Phase 1 (Step 3) | **Implemented** | `backend/app/validation/`, `backend/tests/test_validation_*.py` |
 | **Decision Engine (Approved/Pending/Rejected)** | Phase 1 (Step 4) | *Planned* | `backend/app/services/decision_service.py` |
 | **End-to-End Core Integration** | Phase 1 (Step 5) | *Planned* | `backend/app/api/v1/endpoints/vendors.py` |
 | **Document Processing & OCR** | Phase 2 | *Planned* | `backend/app/services/document_service.py` |

@@ -11,9 +11,29 @@ from app.schemas.vendor import (
     VendorSummary,
 )
 from app.services.vendor_service import vendor_service, VendorServiceError
-from app.core.security import EncryptionError
+from app.core.security import EncryptionError, decrypt_account_number
+from app.core.logging import logger
+from app.validation import (
+    ValidationResult,
+    VendorValidationRequest,
+    validation_engine,
+)
 
 router = APIRouter()
+
+
+@router.post(
+    "/validate",
+    response_model=ValidationResult,
+    status_code=status.HTTP_200_OK,
+    summary="Validate Vendor Submission",
+    description="Deterministically validates a complete or partial vendor payload against required fields, format constraints, and consistency rules. Does not persist any records.",
+)
+def validate_vendor_payload(
+    payload: VendorValidationRequest,
+) -> ValidationResult:
+    """Validate an unsaved vendor payload without persistence."""
+    return validation_engine.validate_vendor(vendor_data=payload)
 
 
 @router.post(
@@ -94,3 +114,64 @@ def get_vendor(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Security error: Failed to safely decrypt vendor sensitive banking data.",
         )
+
+
+@router.post(
+    "/{vendor_id}/validate",
+    response_model=ValidationResult,
+    status_code=status.HTTP_200_OK,
+    summary="Validate Existing Vendor Record",
+    description="Loads a stored vendor record, decrypts banking data internally solely for structural format checks, and runs the deterministic validation engine. Does not alter vendor status or write to the database.",
+)
+def validate_existing_vendor(
+    vendor_id: str,
+    db: Session = Depends(get_db),
+) -> ValidationResult:
+    """Validate an existing persisted vendor record."""
+    vendor = vendor_service.get_vendor_by_id(db=db, vendor_id=vendor_id)
+    if not vendor:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Vendor with ID '{vendor_id}' not found",
+        )
+
+    # Reconstruct data dictionary for engine execution
+    vendor_dict = {
+        "legal_name": vendor.legal_name,
+        "trade_name": vendor.trade_name,
+        "business_type": vendor.business_type,
+        "country_of_incorporation": vendor.country_of_incorporation,
+        "registration_number": vendor.registration_number,
+        "contact_name": vendor.contact_name,
+        "contact_email": vendor.contact_email,
+        "contact_phone": vendor.contact_phone,
+        "address_line1": vendor.address_line1,
+        "address_line2": vendor.address_line2,
+        "city": vendor.city,
+        "state_province": vendor.state_province,
+        "postal_code": vendor.postal_code,
+        "address_country": vendor.address_country,
+        "tax_id_type": vendor.tax_id_type,
+        "tax_id_number": vendor.tax_id_number,
+        "bank_account_holder_name": vendor.bank_account_holder_name,
+        "bank_name": vendor.bank_name,
+        "bank_routing_number": vendor.bank_routing_number,
+        "bank_country": vendor.bank_country,
+    }
+
+    # Decrypt bank account number strictly in memory for structural checks
+    try:
+        decrypted_account = decrypt_account_number(
+            vendor.bank_account_number,
+            allow_legacy_plaintext=True,
+        )
+        vendor_dict["bank_account_number"] = decrypted_account
+    except Exception as e:
+        logger.error("Failed to decrypt account number for validation: %s", type(e).__name__)
+        vendor_dict["bank_account_number"] = None
+
+    return validation_engine.validate_vendor(
+        vendor_data=vendor_dict,
+        vendor_id=vendor.id,
+        context={"is_stored_record": True, "stored_status": vendor.status},
+    )

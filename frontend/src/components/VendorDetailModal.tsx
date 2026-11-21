@@ -8,10 +8,14 @@ import {
   CreditCard,
   Clock,
   Shield,
+  ShieldCheck,
   Copy,
   Check,
+  Loader2,
+  AlertCircle,
 } from 'lucide-react';
-import { VendorResponse } from '../config/api';
+import { VendorResponse, ValidationResult, validateExistingVendor } from '../config/api';
+import { ValidationReport } from './ValidationReport';
 
 interface VendorDetailModalProps {
   vendor: VendorResponse | null;
@@ -25,6 +29,9 @@ export const VendorDetailModal: React.FC<VendorDetailModalProps> = ({
   onClose,
 }) => {
   const [copied, setCopied] = React.useState(false);
+  const [isValidating, setIsValidating] = React.useState(false);
+  const [validationResult, setValidationResult] = React.useState<ValidationResult | null>(null);
+  const [validationError, setValidationError] = React.useState<string | null>(null);
 
   if (!isOpen || !vendor) return null;
 
@@ -32,6 +39,20 @@ export const VendorDetailModal: React.FC<VendorDetailModalProps> = ({
     navigator.clipboard.writeText(vendor.id);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleRunValidation = async () => {
+    if (!vendor) return;
+    setIsValidating(true);
+    setValidationError(null);
+    try {
+      const res = await validateExistingVendor(vendor.id);
+      setValidationResult(res);
+    } catch (err: any) {
+      setValidationError(err.message || 'Validation request failed');
+    } finally {
+      setIsValidating(false);
+    }
   };
 
   return (
@@ -70,17 +91,54 @@ export const VendorDetailModal: React.FC<VendorDetailModalProps> = ({
             </div>
           </div>
 
-          <button
-            type="button"
-            onClick={onClose}
-            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors"
-          >
-            <X className="w-5 h-5" />
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleRunValidation}
+              disabled={isValidating}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 transition-colors disabled:opacity-50"
+            >
+              {isValidating ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-600" />
+                  <span>Validating...</span>
+                </>
+              ) : (
+                <>
+                  <ShieldCheck className="w-3.5 h-3.5 text-indigo-600" />
+                  <span>Validate Record</span>
+                </>
+              )}
+            </button>
+
+            <button
+              type="button"
+              onClick={onClose}
+              className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
         {/* Modal Body */}
         <div className="p-6 space-y-6 max-h-[75vh] overflow-y-auto">
+          {/* Validation Report Banner */}
+          {validationResult && (
+            <ValidationReport
+              result={validationResult}
+              onClose={() => setValidationResult(null)}
+              title="Vendor Record Validation Check"
+            />
+          )}
+
+          {/* Validation Request Error */}
+          {validationError && (
+            <div className="p-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+              <span>{validationError}</span>
+            </div>
+          )}
           {/* Section 1: Company Identity */}
           <div className="space-y-2">
             <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">

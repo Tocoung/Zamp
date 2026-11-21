@@ -130,13 +130,13 @@ export const App: React.FC = () => {
             <BackendStatus />
             <ArchitectureRoadmap />
             
-            <div className="bg-sky-50/60 border border-sky-200/80 rounded-xl p-5 text-xs text-sky-900">
-              <div className="font-semibold text-sm flex items-center mb-1 text-sky-950">
-                <ArrowRight className="w-4 h-4 mr-1 text-sky-700" />
-                Phase 1 — Step 2.1 Scope Demarcation
+            <div className="bg-indigo-50/60 border border-indigo-200/80 rounded-xl p-5 text-xs text-indigo-900">
+              <div className="font-semibold text-sm flex items-center mb-1 text-indigo-950">
+                <ArrowRight className="w-4 h-4 mr-1 text-indigo-700" />
+                Phase 1 — Step 3 Scope Demarcation: Deterministic Validation Engine
               </div>
-              <p className="text-sky-800 leading-relaxed">
-                Step 2.1 hardens vendor data security and system reliability: bank account numbers are authenticated-encrypted at rest (AES-128-CBC + HMAC via Fernet), failed transactions roll back cleanly, startup aborts clearly if database connectivity or schema fails, pagination ordering is strictly deterministic via composite keys, and duplicate submission locking is enforced. In accordance with strict incremental delivery, tax/routing algorithmic validation, automated decision engines, OCR extraction, and human review remain deferred to subsequent steps.
+              <p className="text-indigo-800 leading-relaxed">
+                Step 3 establishes the Deterministic Validation Engine: evaluates vendor submission syntax, mandatory fields, international phone/email structures, country-aware tax IDs (India GSTIN & PAN, US EIN, UK VAT), bank routing transit numbers (India IFSC, US ABA with Mod-10 checksum, SWIFT/BIC), and cross-field consistency without modifying vendor records or mutating submission status. In accordance with strict incremental delivery, this is a validation engine, NOT an approval/rejection decision engine (Step 4), external registry verification, OCR extractor (Phase 2), or human review console (Phase 3).
               </p>
             </div>
           </div>

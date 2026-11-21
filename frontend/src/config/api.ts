@@ -199,3 +199,86 @@ export async function fetchVendorById(
 
   return response.json();
 }
+
+export interface ValidationFinding {
+  rule_id: string;
+  field: string;
+  severity: 'ERROR' | 'WARNING' | 'INFO';
+  status: string;
+  code: string;
+  message: string;
+  suggestion?: string | null;
+}
+
+export interface ValidationSummary {
+  total_checks: number;
+  passed: number;
+  failed: number;
+  warnings: number;
+  info: number;
+}
+
+export interface ValidationResult {
+  validation_id: string;
+  vendor_id?: string | null;
+  status: 'PASSED' | 'PASSED_WITH_WARNINGS' | 'FAILED';
+  valid: boolean;
+  summary: ValidationSummary;
+  findings: ValidationFinding[];
+  validated_at: string;
+  ruleset_version: string;
+}
+
+export async function validateVendorPayload(
+  payload: Partial<VendorCreatePayload>
+): Promise<ValidationResult> {
+  const response = await fetch(`${API_BASE_URL}/vendors/validate`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    let errorMessage = `Validation request failed (HTTP ${response.status})`;
+    try {
+      const errData = await response.json();
+      if (errData.detail) errorMessage = errData.detail;
+    } catch {
+      // fallback
+    }
+    throw new Error(errorMessage);
+  }
+
+  return response.json();
+}
+
+export async function validateExistingVendor(
+  vendorId: string
+): Promise<ValidationResult> {
+  const response = await fetch(`${API_BASE_URL}/vendors/${vendorId}/validate`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+  });
+
+  if (!response.ok) {
+    if (response.status === 404) {
+      throw new Error(`Vendor with ID '${vendorId}' not found`);
+    }
+    let errorMessage = `Failed to validate vendor (HTTP ${response.status})`;
+    try {
+      const errData = await response.json();
+      if (errData.detail) errorMessage = errData.detail;
+    } catch {
+      // fallback
+    }
+    throw new Error(errorMessage);
+  }
+
+  return response.json();
+}

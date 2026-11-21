@@ -1,10 +1,10 @@
 # Zamp — AI-Powered Vendor Onboarding Automation
 
 > **Case Study:** Zamp AI Solutions Analyst Case Study  
-> **Phase:** 1 (Step 2.1 — Vendor Data Security & Reliability Hardening)  
-> **Status:** Hardened, Encrypted at Rest & Fully Verified
+> **Phase:** 1 (Step 3 — Deterministic Validation Engine)  
+> **Status:** Fully Implemented, Unit-Tested, and Verified  
 
-An automated platform designed to streamline vendor company onboarding, compliance document extraction, multi-source verification, decisioning (Approved / Pending / Rejected), and human-in-the-loop review.
+An automated platform designed to streamline vendor company onboarding, compliance document extraction, multi-source verification, deterministic validation, decisioning (Approved / Pending / Rejected), and human-in-the-loop review.
 
 ---
 
@@ -14,232 +14,128 @@ The project uses a clean **Modular Monolith** architecture with decoupled presen
 
 - **Frontend:** React 18 + TypeScript + Vite + Tailwind CSS + Lucide React
 - **Backend:** Python 3.9+ + FastAPI + Pydantic v2 + Uvicorn + Cryptography (Fernet)
+- **Validation Engine:** Modular, decoupled rule engine (`backend/app/validation/`) evaluating required fields, country-aware formats, and cross-field consistency.
 - **Persistence:** SQLAlchemy 2.0 (Active: SQLite with deterministic path resolution; Production interface: PostgreSQL via `DATABASE_URL` with driver)
-- **Testing:** Pytest + FastAPI TestClient (HTTPX) with temporary isolated SQLite databases (35 automated tests)
+- **Testing:** Pytest + FastAPI TestClient (HTTPX) with temporary isolated SQLite databases (66 automated tests)
 
 Detailed architectural boundaries and module roadmaps can be found in [docs/architecture.md](docs/architecture.md).
 
 ---
 
-## 2. Hardened Features & Security Architecture (Step 2.1)
+## 2. Deterministic Validation Engine (Step 3)
 
-### A. Authenticated Data Encryption at Rest
-- **Algorithm:** Authenticated symmetric encryption via Fernet (`cryptography` library), implementing AES-128-CBC with PKCS7 padding and HMAC-SHA256 authentication.
-- **Storage Format:** Stored under the versioned prefix `enc:v1:<fernet_token>` in `vendors.bank_account_number`.
-- **Key Management:** Read from the `VENDOR_DATA_ENCRYPTION_KEY` environment variable. Never hardcoded or committed to git.
-- **Fail-Safe Behavior:** The encryption utility raises `EncryptionConfigurationError` if the key is missing or invalid. It **never** silently falls back to plaintext storage.
-- **Corrupted Ciphertext Protection:** Corrupted or tampered ciphertext raises `DecryptionError` and is never silently treated as plaintext.
-- **Controlled Legacy Migration:** Includes an idempotent migration utility (`backend/app/db/migrate_encryption.py`) that detects unencrypted legacy records, encrypts them in place, and preserves data without downtime or data loss.
-- **MVP vs. Production Notice:** While Fernet authenticated encryption provides strong confidentiality and integrity for this local MVP/prototype, an enterprise production financial platform requires envelope encryption backed by a Hardware Security Module (HSM) or cloud KMS (AWS KMS, GCP Cloud KMS, HashiCorp Vault) with automated key rotation and PCI-DSS compliance.
+The validation engine resides in `backend/app/validation/` and provides a reusable, deterministic rules evaluation framework.
 
-### B. Startup Reliability & Schema Safeguards
-- **Startup Guard:** If database connectivity or required schema initialization fails during `lifespan()`, application startup fails immediately with a `RuntimeError` rather than serving traffic in a degraded or uninitialized state.
-- **Non-Destructive Initialization:** Relies on `CREATE TABLE IF NOT EXISTS`, preserving all existing vendor records and database contents across restarts.
-- **Operational Probes:** Process liveness (`/healthz`) confirms runtime execution, while readiness (`/readyz`) continues monitoring downstream database health.
+### A. Core Architecture & Decoupling
+- **`engine.py`:** Orchestrates evaluation across active rules, calculates summary metrics, ensures deterministic sorting, and builds the `ValidationResult`.
+- **`models.py`:** Declares structured findings (`ValidationFinding`), summary counts (`ValidationSummary`), and evaluation results (`ValidationResult`).
+- **`rules/base.py`:** Reusable `ValidationRule` abstract base class defining rule metadata, severity, target fields, and the `validate()` interface.
+- **`rules/required.py`:** Mandatory-field checks across all 19 required vendor attributes.
+- **`rules/formats.py`:** Country-aware syntax and format rules for contact info, tax identifiers, and banking routing codes.
+- **`rules/consistency.py`:** Cross-field sanity and compatibility rules.
+- **`registry.py`:** Rule registry managing rule registration and deterministic ordering.
+- **`config.py`:** Runtime configuration supporting rule enabling/disabling, ruleset versioning (`1.0.0`), and severity overrides.
 
-### C. Transaction Rollback & Data Integrity
-- **Transactional Rollback:** In `VendorService.create_vendor()`, any database persistence or commit error triggers an immediate `db.rollback()`, ensuring database sessions are never left in a poisoned transaction state.
-- **Safe Server Errors:** Database exceptions are converted into clean 500 HTTP errors. Raw SQL queries, database credentials, and vendor banking data are never exposed in logs or API responses.
+### B. Severity Semantics & Outcome Mapping
+Each finding carries a severity:
+- `ERROR`: Violation of mandatory syntax, checksum, or required fields. Prevents the submission from being valid.
+- `WARNING`: Discrepancy or unusual pattern (e.g. account holder name mismatch, cross-border routing) that warrants review, but does not strictly invalidate data syntax.
+- `INFO`: Informational notes on multinational operations or unsupported tax regimes.
 
-### D. Deterministic Pagination
-- **Composite Sort Key:** Vendor listing queries sort by `Vendor.created_at.desc(), Vendor.id.asc()`, guaranteeing strictly deterministic record ordering across pagination boundaries even when multiple submissions share identical timestamps.
+**Outcome Status Mapping:**
+- `PASSED`: Zero `ERROR` findings and zero `WARNING` findings (`valid: true`).
+- `PASSED_WITH_WARNINGS`: Zero `ERROR` findings, at least one `WARNING` finding (`valid: true`).
+- `FAILED`: One or more `ERROR` findings (`valid: false`).
 
-### E. Frontend Form Flow & Security Accuracy
-- **Duplicate Submission Lock:** Once a submission succeeds, the form locks the submit button (`Submitted (Edit to Re-submit)`) and shows a clear lock indicator banner until any field is edited or the form is reset.
-- **Directory Refresh:** Successfully submitting a vendor and clicking "View in Directory →" automatically triggers a fresh reload of the vendor directory.
-- **Accurate UI Security Messaging:** Corrected inspection modal security badges to clarify that while bank account numbers are authenticated-encrypted at rest and masked in UI views, routing numbers and tax IDs remain unencrypted as needed for tax lookup and clearing network routing.
+### C. Supported Jurisdictions & Initial Ruleset
+1. **Required Fields:** All 19 required fields in `VendorCreate` are validated. Empty strings and whitespace-only values fail. Optional fields (`trade_name`, `address_line2`) never fail.
+2. **Contact Formats:**
+   - Email: RFC 5322 syntax (`FMT_EMAIL_STRUCTURE`).
+   - Phone: International structural check (7–17 digits with optional `+` and separators; reachability is not queried).
+3. **Tax Identifiers:**
+   - India GSTIN: 15-character statutory format (`^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$`).
+   - India PAN: 10-character statutory format (`^[A-Z]{5}[0-9]{4}[A-Z]{1}$`).
+   - US EIN: 9 numeric digits (`^[0-9]{2}-?[0-9]{7}$`) with validation against unassigned IRS campus prefixes.
+   - UK VAT: 9 or 12 numeric digits with optional `GB` prefix (`^(?:GB)?\s*([0-9]{9}|[0-9]{12})$`).
+   - *Unsupported Tax Regimes:* Emits an `INFO` note (`TAX_FORMAT_UNSUPPORTED_NOTE`) without inventing arbitrary validation rules.
+4. **Banking Routing Identifiers:**
+   - India IFSC: 11 characters starting with 4 letters, `0`, and 6 alphanumeric characters (`^[A-Z]{4}0[A-Z0-9]{6}$`).
+   - US ABA Routing: 9 numeric digits verified against Federal Reserve Mod-10 checksum:
+     $$[3(d_1 + d_4 + d_7) + 7(d_2 + d_5 + d_8) + 1(d_3 + d_6 + d_9)] \pmod{10} = 0$$
+   - SWIFT / BIC: 8 or 11 characters (`^[A-Z]{4}[A-Z]{2}[A-Z0-9]{2}(?:[A-Z0-9]{3})?$`).
+5. **Bank Account Number Structural Checks:**
+   - Length between 6 and 34 characters (domestic accounts and IBAN).
+   - Rejection of dummy repeating sequences (`00000000`) and simple runs (`12345678`).
+   - **Zero sensitive data exposure:** The raw account number is never logged or included in finding messages.
+6. **Cross-Field Consistency:**
+   - Tax Type vs. Country: Flags GSTIN/PAN outside India or EIN outside US as `WARNING`.
+   - Routing Code vs. Bank Country: Flags IFSC outside India or ABA outside US as `WARNING`.
+   - Cross-Border Operations: Emits `INFO` note when incorporation country differs from registered address.
+   - Account Holder Name Matching: Compares token overlap against legal and trade names; mismatch emits `WARNING`.
+
+### D. Adding a New Validation Rule
+1. Subclass `ValidationRule` in `backend/app/validation/rules/`.
+2. Implement `validate(self, data, context, config) -> List[ValidationFinding]`.
+3. Register the rule in `backend/app/validation/registry.py` under `create_default_registry()`.
+
+### E. Validation API Endpoints
+- `POST /api/v1/vendors/validate`: Evaluates an unsaved vendor payload (complete or partial) without database writes.
+- `POST /api/v1/vendors/{vendor_id}/validate`: Loads an existing stored vendor, decrypts the account number internally solely for structural length checks, and evaluates the record without modifying vendor status.
 
 ---
 
-## 2. Directory Structure
+## 3. Security & Reliability Architecture (Step 2.1)
 
-```text
-.
-├── .env.example              # Master root environment template
-├── .gitignore                # Strict version control exclusions
-├── README.md                 # Project setup and operational documentation
-├── docs/
-│   └── architecture.md       # Comprehensive architecture specification
-├── backend/
-│   ├── .env.example          # Backend-specific environment template
-│   ├── requirements.txt      # Pinned Python dependencies
-│   ├── app/
-│   │   ├── __init__.py
-│   │   ├── main.py           # FastAPI entrypoint, lifespan, /healthz & /readyz probes
-│   │   ├── core/             # Configuration & logging
-│   │   │   ├── config.py     # Pydantic BaseSettings, path resolution & URL sanitizer
-│   │   │   └── logging.py    # Structured application logging
-│   │   ├── db/               # Persistence abstraction
-│   │   │   ├── base.py       # SQLAlchemy 2.0 DeclarativeBase
-│   │   │   └── session.py    # Engine, SessionLocal, and safe connectivity checks
-│   │   ├── api/              # API presentation layer
-│   │   │   ├── router.py     # Router aggregation & extension mount points
-│   │   │   └── v1/
-│   │   │       └── endpoints/
-│   │   │           └── health.py # /api/v1/health diagnostic endpoint
-│   │   └── services/         # Decoupled business logic (placeholder for Step 2+)
-│   └── tests/                # Automated pytest suite (isolated test database)
-│       ├── conftest.py       # Isolated test engine and session fixtures
-│       ├── test_config.py    # Settings, path resolution & sanitizer tests
-│       └── test_health.py    # Probes, diagnostics, and isolation tests
-└── frontend/
-    ├── package.json          # Node dependencies & scripts
-    ├── package-lock.json     # Deterministic lockfile
-    ├── tsconfig.json         # Strict TypeScript configuration
-    ├── tsconfig.node.json    # Node TypeScript configuration
-    ├── vite.config.ts        # Vite build tool configuration & pre-bundling
-    ├── tailwind.config.js    # Tailwind design tokens
-    ├── .env.example          # Frontend environment template
-    ├── index.html            # Single page application template & fallback skeleton
-    └── src/
-        ├── App.tsx           # Application shell & landing UI
-        ├── main.tsx          # React DOM entry point
-        ├── vite-env.d.ts     # Vite client type definitions
-        ├── config/api.ts     # Centralized API client & health polling
-        └── components/       # Branded UI components
-            ├── Header.tsx
-            ├── BackendStatus.tsx
-            ├── ArchitectureRoadmap.tsx
-            └── Footer.tsx
+- **Encryption at Rest:** Bank account numbers are stored as Fernet authenticated ciphertext (`enc:v1:<token>`).
+- **Fail-Safe Startup:** If `VENDOR_DATA_ENCRYPTION_KEY` is missing or invalid, application startup aborts immediately with a `RuntimeError`.
+- **Transaction Rollback:** `VendorService.create_vendor()` executes explicit `db.rollback()` on persistence errors.
+- **Deterministic Pagination:** Composite sorting `created_at DESC, id ASC` prevents tie-breaking inconsistencies.
+- **Submission Locking:** Form submit locks immediately after submission (`Submitted (Edit to Re-submit)`), unlocking on field edit.
+
+---
+
+## 4. Operational Health Probes
+
+1. **`GET /healthz` (Liveness Probe):** Confirms application process is running (`200 OK`, `{"status": "alive"}`). Does not touch database.
+2. **`GET /readyz` (Readiness Probe):** Verifies downstream database connectivity (`200 OK` when healthy; `503 Service Unavailable` when degraded).
+3. **`GET /api/v1/health` (Frontend Diagnostic):** Returns diagnostic status, database state, environment, and version.
+
+---
+
+## 5. Development Setup & Testing
+
+### Backend
+```bash
+cd backend
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+# Run automated tests (66 tests in isolated temporary database)
+pytest tests -v
+# Start API server
+uvicorn app.main:app --port 8000 --reload
+```
+
+### Frontend
+```bash
+cd frontend
+npm ci
+npm run build
+npm run dev
 ```
 
 ---
 
-## 3. Getting Started & Local Setup
-
-### Prerequisites
-- **Python:** 3.9 or higher
-- **Node.js:** v18 or higher (tested on v26)
-- **Git**
-
----
-
-### Backend Setup
-
-1. **Navigate to the backend directory:**
-   ```bash
-   cd backend
-   ```
-
-2. **Create and activate a virtual environment:**
-   ```bash
-   python3 -m venv .venv
-   source .venv/bin/activate
-   ```
-
-3. **Install reproducible dependencies:**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-4. **Configure environment & encryption key:**
-   ```bash
-   cp .env.example .env
-   # Generate a local authenticated Fernet encryption key:
-   python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-   # Paste the generated key into your .env file as VENDOR_DATA_ENCRYPTION_KEY=<key>
-   ```
-
-5. **Run legacy data migration (if upgrading existing unencrypted database):**
-   ```bash
-   PYTHONPATH=. python3 -m app.db.migrate_encryption
-   ```
-
-6. **Run backend automated tests (executes in isolated temporary database):**
-   ```bash
-   pytest
-   ```
-
-7. **Start the FastAPI development server:**
-   ```bash
-   uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-   ```
-   - API Root: [http://localhost:8000/](http://localhost:8000/)
-   - Liveness Probe: [http://localhost:8000/healthz](http://localhost:8000/healthz)
-   - Readiness Probe: [http://localhost:8000/readyz](http://localhost:8000/readyz)
-   - Diagnostic Endpoint: [http://localhost:8000/api/v1/health](http://localhost:8000/api/v1/health)
-   - Interactive Swagger API Docs: [http://localhost:8000/docs](http://localhost:8000/docs)
-
----
-
-### Frontend Setup
-
-1. **Navigate to the frontend directory:**
-   ```bash
-   cd frontend
-   ```
-
-2. **Install reproducible Node dependencies via lockfile:**
-   ```bash
-   npm ci
-   ```
-
-3. **Configure environment:**
-   ```bash
-   cp .env.example .env.local
-   ```
-
-4. **Verify TypeScript build:**
-   ```bash
-   npm run build
-   ```
-
-5. **Start the Vite development server:**
-   ```bash
-   npm run dev
-   ```
-   - Frontend UI: [http://localhost:5173/](http://localhost:5173/)
-
----
-
-## 4. Operational Probes & Health Check Architecture
-
-The service exposes two standard operational probes alongside a rich diagnostic endpoint:
-
-1. **`GET /healthz` (Liveness Probe):**
-   - Verifies the application process is running and accepting HTTP requests.
-   - Does not touch the database.
-   - Status code: `200 OK`
-   - Response: `{"status": "alive"}`
-
-2. **`GET /readyz` (Readiness Probe):**
-   - Verifies critical downstream dependencies (database connection).
-   - Status code: `200 OK` when healthy; `503 Service Unavailable` when degraded.
-   - Healthy response: `{"status": "ready", "dependencies": {"database": "connected"}}`
-   - Degraded response: `{"status": "not_ready", "dependencies": {"database": "disconnected"}}`
-
-3. **`GET /api/v1/health` (Frontend Diagnostic Endpoint):**
-   - Preserved for frontend UI status widgets, version tracking, and environment reporting.
-   - Returns `200 OK` when ready; `503 Service Unavailable` when degraded.
-   - Response:
-     ```json
-     {
-       "status": "healthy",
-       "timestamp": "2026-11-21T00:00:00Z",
-       "environment": "development",
-       "version": "0.1.0",
-       "database": "connected"
-     }
-     ```
-
----
-
-## 5. Database Configuration & Path Resolution
-
-- **Predictable SQLite Path Resolution:** Relative paths such as `sqlite:///./vendor_onboarding.db` are resolved automatically against the project root directory, guaranteeing consistent file placement regardless of the active terminal working directory.
-- **Credential Masking:** Connection strings logged during startup and error handling are sanitized via `hide_password=True` to prevent credential exposure.
-- **Driver Clarity:** SQLite is the default installed driver. Connecting to PostgreSQL in production requires installing a compatible DBAPI driver package (`psycopg2-binary` or `asyncpg`).
-
----
-
-## 6. Agreed Five-Phase Roadmap
+## 6. Implementation Roadmap
 
 1. **Phase 1: Foundation & Core Onboarding Engine**
    - Step 1: Project Foundation & Architecture *(Completed)*
    - Step 1.1: Foundation Hardening & Architecture Alignment *(Completed)*
    - Step 2: Vendor Data Model & Submission API *(Completed)*
-   - Step 3: Deterministic Validation *(Next)*
-   - Step 4: Decision Engine *(Planned)*
+   - Step 2.1: Vendor Data Security & Reliability Hardening *(Completed)*
+   - Step 3: Deterministic Validation Engine *(Completed)*
+   - Step 4: Decision Engine *(Next)*
    - Step 5: End-to-End Integration *(Planned)*
 2. **Phase 2: Intelligent Document Processing & Cross-Document Verification**
 3. **Phase 3: Exception Handling & Human-in-the-Loop Review**
