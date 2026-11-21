@@ -1,4 +1,4 @@
-"""Integration tests for vendor decision API endpoints, persistence, and explainability."""
+"""Integration tests for vendor decision API endpoints, persistence, explainability, and security hardening."""
 
 from unittest.mock import patch
 import pytest
@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.models.vendor import Vendor
 from app.models.decision import VendorDecision
+from app.core.security import EncryptionConfigurationError
 
 
 @pytest.fixture
@@ -92,6 +93,30 @@ class TestDecisionAPIEndpoints:
         assert "ACCOUNT_HOLDER_NAME_MISMATCH" in decision_data["reason_codes"]
         assert any(r["title"] == "Bank Account Holder Name Requires Review" for r in decision_data["reasons"])
         assert any(rec["action"] == "VERIFY_ACCOUNT_HOLDER" for rec in decision_data["recommendations"])
+
+        vendor_in_db = test_db_session.get(Vendor, vendor_id)
+        assert vendor_in_db.status == "PENDING"
+
+    def test_missing_required_field_evaluates_to_pending(
+        self, client: TestClient, test_db_session: Session, valid_vendor_payload: dict
+    ):
+        """Vendor with a missing required field must evaluate to PENDING (never REJECTED)."""
+        create_resp = client.post("/api/v1/vendors", json=valid_vendor_payload)
+        assert create_resp.status_code == 201
+        vendor_id = create_resp.json()["id"]
+
+        # Simulate missing legal_name on stored record
+        vendor = test_db_session.get(Vendor, vendor_id)
+        vendor.legal_name = ""
+        test_db_session.commit()
+
+        decide_resp = client.post(f"/api/v1/vendors/{vendor_id}/decide")
+        assert decide_resp.status_code == 200
+        decision_data = decide_resp.json()
+
+        assert decision_data["status"] == "PENDING"
+        assert "MISSING_LEGAL_NAME" in decision_data["reason_codes"]
+        assert any(rec["action"] == "PROVIDE_LEGAL_NAME" for rec in decision_data["recommendations"])
 
         vendor_in_db = test_db_session.get(Vendor, vendor_id)
         assert vendor_in_db.status == "PENDING"
@@ -240,3 +265,106 @@ class TestDecisionAPIEndpoints:
         assert "50200012345678" not in resp_text
         # Ciphertext format gAAAAA... must never be in response text
         assert "gAAAAA" not in resp_text
+
+
+class TestDecisionSecurityAndDecryptionHardening:
+    """Tests security failure aborts: corrupted ciphertext, missing key, and zero state mutation."""
+
+    def test_corrupted_ciphertext_aborts_decision_evaluation(
+        self, client: TestClient, test_db_session: Session, valid_vendor_payload: dict
+    ):
+        """Corrupted ciphertext in bank_account_number aborts decision with 500 and no state mutation."""
+        create_resp = client.post("/api/v1/vendors", json=valid_vendor_payload)
+        assert create_resp.status_code == 201
+        vendor_id = create_resp.json()["id"]
+
+        # Directly corrupt ciphertext in database
+        vendor = test_db_session.get(Vendor, vendor_id)
+        initial_status = vendor.status
+        initial_updated_at = vendor.updated_at
+        vendor.bank_account_number = "enc:v1:corrupted_ciphertext_token_12345"
+        test_db_session.commit()
+        test_db_session.refresh(vendor)
+        baseline_updated_at = vendor.updated_at
+
+        # Attempt to run decision
+        decide_resp = client.post(f"/api/v1/vendors/{vendor_id}/decide")
+        assert decide_resp.status_code == 500
+        err_detail = decide_resp.json()["detail"]
+
+        # Confirm sanitized error message
+        assert "Security or data integrity error" in err_detail
+        assert "corrupted_ciphertext" not in err_detail
+        assert "50200012345678" not in err_detail
+
+        # Confirm vendor status and updated_at were NOT modified
+        test_db_session.expire_all()
+        vendor_after = test_db_session.get(Vendor, vendor_id)
+        assert vendor_after.status == initial_status
+        assert vendor_after.updated_at == baseline_updated_at
+
+        # Confirm zero decision history records were created
+        decisions = test_db_session.query(VendorDecision).filter_by(vendor_id=vendor_id).all()
+        assert len(decisions) == 0
+
+    def test_missing_encryption_key_aborts_decision_evaluation(
+        self, client: TestClient, test_db_session: Session, valid_vendor_payload: dict
+    ):
+        """Missing encryption key aborts decision with 500 without modifying vendor status."""
+        create_resp = client.post("/api/v1/vendors", json=valid_vendor_payload)
+        assert create_resp.status_code == 201
+        vendor_id = create_resp.json()["id"]
+
+        vendor = test_db_session.get(Vendor, vendor_id)
+        initial_status = vendor.status
+        baseline_updated_at = vendor.updated_at
+
+        with patch(
+            "app.services.decision_service.decrypt_account_number",
+            side_effect=EncryptionConfigurationError("VENDOR_DATA_ENCRYPTION_KEY missing"),
+        ):
+            decide_resp = client.post(f"/api/v1/vendors/{vendor_id}/decide")
+            assert decide_resp.status_code == 500
+            err_detail = decide_resp.json()["detail"]
+            assert "Security or data integrity error" in err_detail
+
+        test_db_session.expire_all()
+        vendor_after = test_db_session.get(Vendor, vendor_id)
+        assert vendor_after.status == initial_status
+        assert vendor_after.updated_at == baseline_updated_at
+
+        decisions = test_db_session.query(VendorDecision).filter_by(vendor_id=vendor_id).all()
+        assert len(decisions) == 0
+
+    def test_existing_decision_history_remains_intact_after_subsequent_failure(
+        self, client: TestClient, test_db_session: Session, valid_vendor_payload: dict
+    ):
+        """Subsequent technical evaluation failure preserves previous decision records intact."""
+        create_resp = client.post("/api/v1/vendors", json=valid_vendor_payload)
+        vendor_id = create_resp.json()["id"]
+
+        # Run successful initial decision -> APPROVED
+        first_decide = client.post(f"/api/v1/vendors/{vendor_id}/decide")
+        assert first_decide.status_code == 200
+        assert first_decide.json()["status"] == "APPROVED"
+
+        # Corrupt bank account in DB
+        vendor = test_db_session.get(Vendor, vendor_id)
+        vendor.bank_account_number = "enc:v1:damaged_token"
+        test_db_session.commit()
+
+        # Run second decision -> fails with 500
+        second_decide = client.post(f"/api/v1/vendors/{vendor_id}/decide")
+        assert second_decide.status_code == 500
+
+        # Query decision history: original APPROVED decision must remain intact
+        history_resp = client.get(f"/api/v1/vendors/{vendor_id}/decision-history")
+        assert history_resp.status_code == 200
+        history_data = history_resp.json()
+
+        assert history_data["total"] == 1
+        assert history_data["items"][0]["status"] == "APPROVED"
+
+        # Vendor status remains APPROVED (from prior successful evaluation)
+        vendor_refreshed = test_db_session.get(Vendor, vendor_id)
+        assert vendor_refreshed.status == "APPROVED"

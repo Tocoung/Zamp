@@ -1,45 +1,85 @@
 """Configuration for the deterministic decision engine."""
 
-from typing import Dict, Optional
+from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 from app.decision.models import DecisionAction
 
 
 # Default mapping from validation rule IDs to DecisionAction
+# Every single rule in the validation registry (28 total) is explicitly mapped below.
 DEFAULT_RULE_ACTIONS: Dict[str, DecisionAction] = {
-    # Syntax and format validations: blocking errors
+    # 1. Mandatory required fields (19 rules):
+    # Missing information is NOT conclusive proof of ineligibility or fraud.
+    # Therefore, all missing required fields map to REVIEW -> produces PENDING.
+    "COMPANY_LEGAL_NAME_REQUIRED": DecisionAction.REVIEW,
+    "COMPANY_BUSINESS_TYPE_REQUIRED": DecisionAction.REVIEW,
+    "COMPANY_INCORPORATION_COUNTRY_REQUIRED": DecisionAction.REVIEW,
+    "COMPANY_REGISTRATION_NUMBER_REQUIRED": DecisionAction.REVIEW,
+    "CONTACT_NAME_REQUIRED": DecisionAction.REVIEW,
+    "CONTACT_EMAIL_REQUIRED": DecisionAction.REVIEW,
+    "CONTACT_PHONE_REQUIRED": DecisionAction.REVIEW,
+    "ADDRESS_LINE1_REQUIRED": DecisionAction.REVIEW,
+    "ADDRESS_CITY_REQUIRED": DecisionAction.REVIEW,
+    "ADDRESS_STATE_PROVINCE_REQUIRED": DecisionAction.REVIEW,
+    "ADDRESS_POSTAL_CODE_REQUIRED": DecisionAction.REVIEW,
+    "ADDRESS_COUNTRY_REQUIRED": DecisionAction.REVIEW,
+    "TAX_ID_TYPE_REQUIRED": DecisionAction.REVIEW,
+    "TAX_ID_NUMBER_REQUIRED": DecisionAction.REVIEW,
+    "BANK_ACCOUNT_HOLDER_REQUIRED": DecisionAction.REVIEW,
+    "BANK_NAME_REQUIRED": DecisionAction.REVIEW,
+    "BANK_ACCOUNT_NUMBER_REQUIRED": DecisionAction.REVIEW,
+    "BANK_ROUTING_NUMBER_REQUIRED": DecisionAction.REVIEW,
+    "BANK_COUNTRY_REQUIRED": DecisionAction.REVIEW,
+
+    # 2. Syntax, format, and structural validations (5 rules):
+    # Violations of statutory syntax or invalid structural checks block onboarding -> REJECTED.
     "FMT_EMAIL_STRUCTURE": DecisionAction.BLOCK,
-    "FMT_PHONE_E164": DecisionAction.BLOCK,
+    "FMT_PHONE_INTERNATIONAL": DecisionAction.BLOCK,
     "FMT_TAX_ID_SYNTAX": DecisionAction.BLOCK,
     "FMT_BANK_ROUTING": DecisionAction.BLOCK,
     "FMT_BANK_ACCOUNT_STRUCTURAL": DecisionAction.BLOCK,
 
-    # Mandatory fields: review/clarification by default (incomplete submission)
-    "REQ_LEGAL_NAME": DecisionAction.BLOCK,
-    "REQ_REGISTRATION_NUMBER": DecisionAction.BLOCK,
-    "REQ_COUNTRY_OF_INCORPORATION": DecisionAction.BLOCK,
-    "REQ_TAX_ID_NUMBER": DecisionAction.BLOCK,
-    "REQ_BANK_ACCOUNT_NUMBER": DecisionAction.BLOCK,
-    "REQ_BANK_ROUTING_NUMBER": DecisionAction.BLOCK,
-
-    # Cross-field consistency rules: review items (not outright rejection)
+    # 3. Cross-field consistency rules (4 rules):
+    # Discrepancies warrant human review (REVIEW -> PENDING), while cross-border operations are noted (IGNORE).
     "CONST_ACCOUNT_HOLDER_MATCH": DecisionAction.REVIEW,
     "CONST_TAX_TYPE_COUNTRY": DecisionAction.REVIEW,
     "CONST_ROUTING_BANK_COUNTRY": DecisionAction.REVIEW,
-
-    # Informational rules: do not impede approval
     "CONST_CROSS_BORDER_REGISTRATION": DecisionAction.IGNORE,
 }
 
 # Fine-grained mapping by specific finding code
 DEFAULT_FINDING_CODE_ACTIONS: Dict[str, DecisionAction] = {
-    # Format blocking codes
+    # Incomplete submission / Missing required fields: REVIEW (PENDING)
+    "REQUIRED_FIELD_MISSING": DecisionAction.REVIEW,
+    "MISSING_LEGAL_NAME": DecisionAction.REVIEW,
+    "MISSING_BUSINESS_TYPE": DecisionAction.REVIEW,
+    "MISSING_COUNTRY_OF_INCORPORATION": DecisionAction.REVIEW,
+    "MISSING_REGISTRATION_NUMBER": DecisionAction.REVIEW,
+    "MISSING_CONTACT_NAME": DecisionAction.REVIEW,
+    "MISSING_CONTACT_EMAIL": DecisionAction.REVIEW,
+    "MISSING_CONTACT_PHONE": DecisionAction.REVIEW,
+    "MISSING_ADDRESS_LINE1": DecisionAction.REVIEW,
+    "MISSING_CITY": DecisionAction.REVIEW,
+    "MISSING_STATE_PROVINCE": DecisionAction.REVIEW,
+    "MISSING_POSTAL_CODE": DecisionAction.REVIEW,
+    "MISSING_ADDRESS_COUNTRY": DecisionAction.REVIEW,
+    "MISSING_TAX_ID_TYPE": DecisionAction.REVIEW,
+    "MISSING_TAX_ID_NUMBER": DecisionAction.REVIEW,
+    "MISSING_BANK_ACCOUNT_HOLDER_NAME": DecisionAction.REVIEW,
+    "MISSING_BANK_NAME": DecisionAction.REVIEW,
+    "MISSING_BANK_ACCOUNT_NUMBER": DecisionAction.REVIEW,
+    "MISSING_BANK_ROUTING_NUMBER": DecisionAction.REVIEW,
+    "MISSING_BANK_COUNTRY": DecisionAction.REVIEW,
+
+    # Format blocking codes: BLOCK (REJECTED)
     "INVALID_EMAIL_FORMAT": DecisionAction.BLOCK,
-    "INVALID_PHONE_FORMAT": DecisionAction.BLOCK,
+    "INVALID_PHONE_STRUCTURE": DecisionAction.BLOCK,
+    "INVALID_PHONE_DIGIT_COUNT": DecisionAction.BLOCK,
     "INVALID_GSTIN_FORMAT": DecisionAction.BLOCK,
     "INVALID_PAN_FORMAT": DecisionAction.BLOCK,
     "INVALID_EIN_FORMAT": DecisionAction.BLOCK,
-    "INVALID_VAT_FORMAT": DecisionAction.BLOCK,
+    "INVALID_EIN_PREFIX": DecisionAction.BLOCK,
+    "INVALID_UK_VAT_FORMAT": DecisionAction.BLOCK,
     "INVALID_IFSC_FORMAT": DecisionAction.BLOCK,
     "INVALID_ABA_FORMAT": DecisionAction.BLOCK,
     "INVALID_ABA_CHECKSUM": DecisionAction.BLOCK,
@@ -48,15 +88,15 @@ DEFAULT_FINDING_CODE_ACTIONS: Dict[str, DecisionAction] = {
     "DUMMY_ACCOUNT_SEQUENCE": DecisionAction.BLOCK,
     "SEQUENTIAL_ACCOUNT_DUMMY": DecisionAction.BLOCK,
 
-    # Warnings / Consistency review codes
+    # Warnings / Consistency review codes: REVIEW (PENDING)
     "ACCOUNT_HOLDER_NAME_MISMATCH": DecisionAction.REVIEW,
     "TAX_TYPE_COUNTRY_MISMATCH": DecisionAction.REVIEW,
     "ROUTING_BANK_COUNTRY_MISMATCH": DecisionAction.REVIEW,
     "UNUSUAL_ROUTING_LENGTH": DecisionAction.REVIEW,
 
-    # Informational codes (non-blocking)
+    # Informational codes (non-blocking): IGNORE (APPROVED if no blockers)
     "CROSS_BORDER_OPERATIONS_NOTE": DecisionAction.IGNORE,
-    "UNSUPPORTED_TAX_TYPE": DecisionAction.IGNORE,
+    "TAX_FORMAT_UNSUPPORTED_NOTE": DecisionAction.IGNORE,
 }
 
 
@@ -89,10 +129,10 @@ class DecisionConfig(BaseModel):
     ) -> DecisionAction:
         """Deterministically resolves the DecisionAction for a given finding.
         
-        Resolution precedence:
-        1. Explicit finding code override
+        Resolution Precedence:
+        1. Explicit finding code override (highest priority)
         2. Explicit rule ID override
-        3. Fallback based on severity level
+        3. Documented fallback based on severity level (ERROR -> BLOCK, WARNING -> REVIEW, INFO -> IGNORE)
         """
         if finding_code and finding_code in self.finding_code_actions:
             return self.finding_code_actions[finding_code]
@@ -106,3 +146,39 @@ class DecisionConfig(BaseModel):
         elif sev_upper == "WARNING":
             return self.default_warning_action
         return self.default_info_action
+
+    def verify_registry_coverage(self, registry: Any) -> Dict[str, Any]:
+        """Validates that every rule in the rule registry has an explicit mapping or documented fallback.
+        
+        Returns a coverage audit dictionary.
+        """
+        all_rules = registry.list_all_rules()
+        explicitly_mapped = []
+        fallback_covered = []
+
+        for rule in all_rules:
+            if rule.rule_id in self.rule_actions:
+                explicitly_mapped.append({
+                    "rule_id": rule.rule_id,
+                    "action": self.rule_actions[rule.rule_id].value,
+                    "category": getattr(rule, "category", "general"),
+                })
+            else:
+                action = self.resolve_action(
+                    rule.rule_id, None, rule.default_severity.value
+                )
+                fallback_covered.append({
+                    "rule_id": rule.rule_id,
+                    "action": action.value,
+                    "severity": rule.default_severity.value,
+                    "category": getattr(rule, "category", "general"),
+                })
+
+        return {
+            "total_registered_rules": len(all_rules),
+            "explicitly_mapped_count": len(explicitly_mapped),
+            "fallback_covered_count": len(fallback_covered),
+            "explicitly_mapped": explicitly_mapped,
+            "fallback_covered": fallback_covered,
+            "is_fully_covered": (len(explicitly_mapped) + len(fallback_covered)) == len(all_rules),
+        }

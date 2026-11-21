@@ -16,7 +16,7 @@ from app.decision.models import (
 )
 from app.decision.registry import decision_engine
 from app.validation import validation_engine
-from app.core.security import decrypt_account_number
+from app.core.security import decrypt_account_number, EncryptionError
 from app.core.logging import logger
 
 
@@ -43,7 +43,12 @@ class DecisionService:
         
         Transactional Guarantee:
         The new VendorDecision record and the Vendor.status update occur in the
-        same database transaction. If persistence fails, both are rolled back.
+        same database transaction. If persistence or evaluation fails, both are rolled back.
+        
+        Security Guarantee:
+        If sensitive banking data cannot be safely decrypted or key configuration is missing,
+        the process aborts cleanly with a DecisionServiceError. It never degrades into a normal
+        missing-field finding, never records corrupted history, and never modifies vendor status.
         
         Args:
             db: Active database session.
@@ -55,7 +60,7 @@ class DecisionService:
             
         Raises:
             VendorNotFoundError: If vendor is not found.
-            DecisionServiceError: If database persistence fails.
+            DecisionServiceError: If decryption, evaluation, or persistence fails.
         """
         vendor = db.scalar(select(Vendor).where(Vendor.id == vendor_id))
         if not vendor:
@@ -85,32 +90,53 @@ class DecisionService:
             "bank_country": vendor.bank_country,
         }
 
-        # Decrypt bank account strictly in memory for structural validation
-        try:
-            plain_account = decrypt_account_number(
-                vendor.bank_account_number,
-                allow_legacy_plaintext=True,
-            )
-            vendor_dict["bank_account_number"] = plain_account
-        except Exception as e:
-            logger.error("Failed to decrypt account number for decision evaluation: %s", type(e).__name__)
+        # 2. Decrypt bank account strictly in memory for structural validation
+        # CRITICAL HARDENING: Technical decryption failures MUST abort decision evaluation.
+        # They must NEVER be silently converted into a 'missing field' finding.
+        if vendor.bank_account_number and str(vendor.bank_account_number).strip():
+            try:
+                plain_account = decrypt_account_number(
+                    vendor.bank_account_number,
+                    allow_legacy_plaintext=True,
+                )
+                vendor_dict["bank_account_number"] = plain_account
+            except EncryptionError as e:
+                logger.error(
+                    "Security/cryptography error decrypting bank account during decision evaluation: class=%s, vendor_id=%s",
+                    type(e).__name__,
+                    vendor.id,
+                )
+                raise DecisionServiceError(
+                    "Security or data integrity error: Sensitive banking data could not be safely decrypted for decision evaluation."
+                ) from e
+            except Exception as e:
+                logger.error(
+                    "Unexpected technical error decrypting bank account during decision evaluation: class=%s, vendor_id=%s",
+                    type(e).__name__,
+                    vendor.id,
+                )
+                raise DecisionServiceError(
+                    "Security or data integrity error: Sensitive banking data could not be safely decrypted for decision evaluation."
+                ) from e
+        else:
+            # Genuinely unpopulated in the database record (missing field)
             vendor_dict["bank_account_number"] = None
 
-        # 2. Run validation engine EXACTLY ONCE
+        # 3. Run validation engine EXACTLY ONCE
         validation_result = validation_engine.validate_vendor(
             vendor_data=vendor_dict,
             vendor_id=vendor.id,
             context={"is_stored_record": True, "stored_status": vendor.status},
         )
 
-        # 3. Evaluate deterministic decision
+        # 4. Evaluate deterministic decision
         decision_result = decision_engine.evaluate(
             validation_result=validation_result,
             vendor_id=vendor.id,
             vendor_data=vendor_dict,
         )
 
-        # 4. Construct persistent decision record
+        # 5. Construct persistent decision record
         explanation_payload = {
             "reasons": [r.model_dump() for r in decision_result.reasons],
             "recommendations": [rec.model_dump() for rec in decision_result.recommendations],
@@ -129,7 +155,7 @@ class DecisionService:
             decided_at=decision_result.decided_at,
         )
 
-        # 5. Transactional commit: persist decision record and update vendor status
+        # 6. Transactional commit: persist decision record and update vendor status
         try:
             db.add(decision_record)
             vendor.status = decision_result.status.value

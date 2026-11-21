@@ -222,7 +222,56 @@ Each finding carries a severity:
 
 ---
 
-## 7. Five-Phase Implementation Roadmap
+## 7. Deterministic Decision Engine & Policy Hardening Architecture (Step 4 & Step 4.1)
+
+The decision engine resides in `backend/app/decision/` and orchestrates deterministic onboarding decisions from validation findings.
+
+```text
+backend/app/decision/
+├── __init__.py           # Package exports
+├── config.py             # DecisionConfig, DEFAULT_RULE_ACTIONS, verify_registry_coverage()
+├── engine.py             # DecisionEngine orchestrator & outcome calculation
+├── models.py             # Pydantic schemas (DecisionResult, DecisionReason, DecisionRecommendation)
+├── registry.py           # Engine singleton instance
+└── rules.py              # Explainable reason mappers & sanitized recommendation generators
+```
+
+### A. Tri-State Decision Semantics
+1. **`APPROVED`:** All deterministic mandatory fields, statutory formats, and consistency rules are satisfied without blocking errors or unresolved review items.
+   *Important:* An `APPROVED` outcome indicates that configured deterministic checks passed. It does NOT assert official government tax registration or verify bank account ownership with third-party banking APIs.
+2. **`PENDING`:** The vendor record requires review, clarification, or additional information before onboarding can proceed. Triggered by missing mandatory submission fields or cross-field consistency discrepancies.
+3. **`REJECTED`:** The vendor violated a configured statutory syntax rule, invalid checksum, or placeholder banking sequence (e.g. malformed GSTIN, failed US ABA Mod-10 checksum, dummy bank account).
+
+### B. Core Finding Classifications & Policy Mapping
+
+| Classification | Validation Finding Examples | Decision Action | Resulting Decision Status | Operational Rationale |
+| :--- | :--- | :--- | :--- | :--- |
+| **Incomplete Information** | All 19 missing mandatory fields (`COMPANY_LEGAL_NAME_REQUIRED`, `BANK_ACCOUNT_NUMBER_REQUIRED`, etc.) | `DecisionAction.REVIEW` | **`PENDING`** | Missing or incomplete fields do not constitute conclusive evidence of ineligibility or fraud. Actionable recommendations prompt the vendor to provide the missing mandatory values (`PROVIDE_LEGAL_NAME`, etc.). |
+| **Invalid Structural Information** | Malformed GSTIN/PAN/EIN syntax, failed ABA Mod-10 checksum, invalid IFSC, dummy account sequence | `DecisionAction.BLOCK` | **`REJECTED`** | Concrete structural or statutory violations representing invalid or unusable financial/tax coordinates. |
+| **Review-Required Inconsistencies** | Bank account holder name mismatch, tax scheme mismatch with jurisdiction, domestic routing code outside domicile country | `DecisionAction.REVIEW` | **`PENDING`** | Discrepancies warrant human compliance review and supporting documentation (e.g. DBA explanation, parent entity relationship) rather than outright rejection. |
+| **Informational Notes** | Cross-border operations note, unsupported foreign tax regime note | `DecisionAction.IGNORE` | **`APPROVED`** *(if no blockers)* | Operational notes that document multinational posture without impeding onboarding approval. |
+| **Technical Integrity Failures** | Corrupted ciphertext (`enc:v1:...`), absent/invalid encryption key | **Abort Execution** | **`HTTP 500 Error`** | Technical failures must NEVER be converted into business findings (e.g. treating failed decryption as a "missing account number"). The engine aborts with zero mutation to `vendor.status` or `vendor.updated_at` and creates zero decision records. |
+
+### C. Resolution Precedence Hierarchy
+Configuration precedence is strictly enforced:
+1. **Explicit finding code override** (`self.finding_code_actions`): Highest precedence for granular code rules.
+2. **Explicit rule ID mapping** (`self.rule_actions`): Mapped across all 28 validation registry rules.
+3. **Documented severity fallback** (`default_error_action -> BLOCK`, `default_warning_action -> REVIEW`, `default_info_action -> IGNORE`).
+
+Full registry coverage is programmatically verified using `DecisionConfig.verify_registry_coverage(default_registry)`.
+
+### D. Explanation Sanitization & Sensitive Data Privacy
+- **Zero Raw Value Echoing:** Decision reasons and recommendations do not echo user-provided raw values. For example, `ACCOUNT_HOLDER_NAME_MISMATCH` generates: *"The bank account holder name does not sufficiently match the registered company or trade name."* without reflecting raw submitted entity names.
+- **Zero Sensitive Banking Data:** Plaintext account numbers, Fernet ciphertexts, tax IDs, and passwords are strictly excluded from persisted `validation_snapshot`, decision explanations, and logs.
+
+### E. Transactional Consistency & Append-Only Audit History
+- A decision execution inserts a new `VendorDecision` record and updates `Vendor.status` atomically in the same database transaction (`db.commit()`).
+- If an error occurs at any point, both operations are rolled back completely (`db.rollback()`).
+- Decision history is strictly append-only, preserving an auditable trail of all evaluations.
+
+---
+
+## 8. Five-Phase Implementation Roadmap
 
 Boundaries are strictly maintained between completed steps and planned future modules:
 
@@ -233,7 +282,8 @@ flowchart TD
         F2 --> F2_1["Step 2.1: Data Security & Reliability Hardening (IMPLEMENTED)"]
         F2_1 --> F3["Step 3: Deterministic Validation Engine (IMPLEMENTED)"]
         F3 --> F4["Step 4: Decision Engine & Explainability (IMPLEMENTED)"]
-        F4 --> F5["Step 5: End-to-End Integration (PLANNED)"]
+        F4 --> F4_1["Step 4.1: Decision Policy & Evidence Hardening (IMPLEMENTED)"]
+        F4_1 --> F5["Step 5: End-to-End Integration (PLANNED)"]
     end
 
     subgraph P2["Phase 2: Intelligent Document Processing & Verification"]
@@ -273,6 +323,7 @@ flowchart TD
 | **Data Encryption & Reliability Hardening** | Phase 1 (Step 2.1) | **Implemented** | `backend/app/core/security.py`, `backend/app/db/migrate_encryption.py`, `backend/tests/test_security_and_reliability.py` |
 | **Deterministic Validation Engine** | Phase 1 (Step 3) | **Implemented** | `backend/app/validation/`, `backend/tests/test_validation_*.py` |
 | **Decision Engine (Approved/Pending/Rejected)** | Phase 1 (Step 4) | **Implemented** | `backend/app/decision/`, `backend/app/services/decision_service.py` |
+| **Decision Policy & Evidence Hardening** | Phase 1 (Step 4.1) | **Implemented** | `backend/app/decision/config.py`, `backend/app/decision/rules.py`, `backend/app/services/decision_service.py` |
 | **End-to-End Core Integration** | Phase 1 (Step 5) | *Planned* | `backend/app/api/v1/endpoints/vendors.py` |
 | **Document Processing & OCR** | Phase 2 | *Planned* | `backend/app/services/document_service.py` |
 | **Human-in-the-Loop Review** | Phase 3 | *Planned* | `backend/app/services/review_service.py` |
@@ -281,7 +332,7 @@ flowchart TD
 
 ---
 
-## 8. Dependency Reproducibility Strategy
+## 9. Dependency Reproducibility Strategy
 
 For a one-week case study project, dependency management balances determinism with zero unnecessary tool overhead:
 - **Backend:** Pin explicit, exact versions in `backend/requirements.txt` (`==` pinning). Standard installation via `python3 -m venv .venv && pip install -r requirements.txt`. Includes `cryptography==50.0.2` for authenticated encryption at rest.

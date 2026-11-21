@@ -1,4 +1,4 @@
-"""Unit tests for deterministic decision engine mapping, logic, and explainability."""
+"""Unit tests for deterministic decision engine mapping, logic, explainability, and policy hardening."""
 
 from datetime import datetime, timezone
 import pytest
@@ -10,8 +10,14 @@ from app.decision.models import (
     DecisionResult,
     DecisionStatus,
 )
-from app.decision.config import DecisionConfig
+from app.decision.config import DecisionConfig, DEFAULT_RULE_ACTIONS
 from app.decision.engine import DecisionEngine
+from app.decision.rules import (
+    map_finding_to_decision_reason,
+    map_finding_to_recommendation,
+)
+from app.validation.registry import default_registry
+from app.validation.rules.required import REQUIRED_FIELDS_METADATA
 from app.validation.models import (
     Severity,
     ValidationFinding,
@@ -45,6 +51,252 @@ def mock_validation_passed() -> ValidationResult:
         validated_at=datetime.now(timezone.utc),
         ruleset_version="1.0.0",
     )
+
+
+class TestDecisionEngineRegistryCoverage:
+    """Verifies that all registered validation rules have explicit and deterministic mappings."""
+
+    def test_all_registered_validation_rules_explicitly_mapped(self):
+        """Every single rule in default_registry (all 28 rules) must be explicitly mapped in rule_actions."""
+        config = DecisionConfig()
+        coverage_report = config.verify_registry_coverage(default_registry)
+
+        assert coverage_report["is_fully_covered"] is True
+        assert coverage_report["total_registered_rules"] == 28
+        assert coverage_report["explicitly_mapped_count"] == 28
+        assert coverage_report["fallback_covered_count"] == 0
+
+        # Confirm all 19 required field rules explicitly map to DecisionAction.REVIEW
+        for field, rule_id, _, _ in REQUIRED_FIELDS_METADATA:
+            assert rule_id in config.rule_actions, f"Rule {rule_id} missing from rule_actions"
+            assert config.rule_actions[rule_id] == DecisionAction.REVIEW
+
+        # Confirm format rules map to BLOCK
+        format_rules = [
+            "FMT_EMAIL_STRUCTURE",
+            "FMT_PHONE_INTERNATIONAL",
+            "FMT_TAX_ID_SYNTAX",
+            "FMT_BANK_ROUTING",
+            "FMT_BANK_ACCOUNT_STRUCTURAL",
+        ]
+        for f_rule in format_rules:
+            assert config.rule_actions[f_rule] == DecisionAction.BLOCK
+
+        # Confirm consistency rules
+        assert config.rule_actions["CONST_ACCOUNT_HOLDER_MATCH"] == DecisionAction.REVIEW
+        assert config.rule_actions["CONST_TAX_TYPE_COUNTRY"] == DecisionAction.REVIEW
+        assert config.rule_actions["CONST_ROUTING_BANK_COUNTRY"] == DecisionAction.REVIEW
+        assert config.rule_actions["CONST_CROSS_BORDER_REGISTRATION"] == DecisionAction.IGNORE
+
+
+class TestRequiredFieldDecisionPolicy:
+    """Verifies that missing required fields produce PENDING with actionable recommendations."""
+
+    @pytest.mark.parametrize("field,rule_id,msg,sugg", REQUIRED_FIELDS_METADATA)
+    def test_each_required_field_rule_evaluates_to_pending(
+        self, clean_decision_engine: DecisionEngine, field: str, rule_id: str, msg: str, sugg: str
+    ):
+        """Each of the 19 required fields when missing must evaluate to PENDING (never REJECTED)."""
+        finding = ValidationFinding(
+            rule_id=rule_id,
+            field=field,
+            severity=Severity.ERROR,
+            status="FAILED",
+            code="REQUIRED_FIELD_MISSING",
+            message=msg,
+            suggestion=sugg,
+        )
+
+        val_result = ValidationResult(
+            validation_id=f"val-req-{field}",
+            vendor_id="vendor-test",
+            status="FAILED",
+            valid=False,
+            summary=ValidationSummary(total_checks=28, passed=27, failed=1, warnings=0, info=0),
+            findings=[finding],
+            validated_at=datetime.now(timezone.utc),
+            ruleset_version="1.0.0",
+        )
+
+        result = clean_decision_engine.evaluate(
+            validation_result=val_result,
+            vendor_id="vendor-test",
+        )
+
+        # Incomplete submission must be PENDING, not REJECTED
+        assert result.status == DecisionStatus.PENDING
+        expected_code = f"MISSING_{field.upper()}"
+        assert expected_code in result.reason_codes
+
+        # Verify reason details
+        matching_reasons = [r for r in result.reasons if r.code == expected_code]
+        assert len(matching_reasons) == 1
+        assert field in matching_reasons[0].explanation
+        assert "incomplete" in matching_reasons[0].explanation.lower()
+
+        # Verify actionable recommendation
+        expected_rec_action = f"PROVIDE_{field.upper()}"
+        matching_recs = [rec for rec in result.recommendations if rec.action == expected_rec_action]
+        assert len(matching_recs) == 1
+        assert matching_recs[0].priority == "MEDIUM"
+
+    def test_multiple_missing_fields_produce_pending_with_all_reasons(
+        self, clean_decision_engine: DecisionEngine
+    ):
+        """When multiple required fields are missing, all reasons are preserved under PENDING."""
+        findings = [
+            ValidationFinding(
+                rule_id="COMPANY_LEGAL_NAME_REQUIRED",
+                field="legal_name",
+                severity=Severity.ERROR,
+                status="FAILED",
+                code="REQUIRED_FIELD_MISSING",
+                message="Legal company name is required.",
+                suggestion="Provide legal name.",
+            ),
+            ValidationFinding(
+                rule_id="CONTACT_EMAIL_REQUIRED",
+                field="contact_email",
+                severity=Severity.ERROR,
+                status="FAILED",
+                code="REQUIRED_FIELD_MISSING",
+                message="Business contact email is required.",
+                suggestion="Provide contact email.",
+            ),
+            ValidationFinding(
+                rule_id="BANK_ACCOUNT_NUMBER_REQUIRED",
+                field="bank_account_number",
+                severity=Severity.ERROR,
+                status="FAILED",
+                code="REQUIRED_FIELD_MISSING",
+                message="Bank account number is required.",
+                suggestion="Provide account number.",
+            ),
+        ]
+
+        val_result = ValidationResult(
+            validation_id="val-multi-missing",
+            vendor_id="vendor-test",
+            status="FAILED",
+            valid=False,
+            summary=ValidationSummary(total_checks=28, passed=25, failed=3, warnings=0, info=0),
+            findings=findings,
+            validated_at=datetime.now(timezone.utc),
+            ruleset_version="1.0.0",
+        )
+
+        result = clean_decision_engine.evaluate(
+            validation_result=val_result,
+            vendor_id="vendor-test",
+        )
+
+        assert result.status == DecisionStatus.PENDING
+        assert "MISSING_LEGAL_NAME" in result.reason_codes
+        assert "MISSING_CONTACT_EMAIL" in result.reason_codes
+        assert "MISSING_BANK_ACCOUNT_NUMBER" in result.reason_codes
+        assert len(result.reasons) == 3
+        assert len(result.recommendations) == 3
+
+
+class TestDecisionPolicyPrecedence:
+    """Verifies resolution precedence: Finding code override -> Rule ID mapping -> Severity fallback."""
+
+    def test_precedence_hierarchy(self):
+        config = DecisionConfig(
+            rule_actions={"TEST_RULE": DecisionAction.BLOCK},
+            finding_code_actions={"OVERRIDE_CODE": DecisionAction.IGNORE},
+            default_error_action=DecisionAction.BLOCK,
+            default_warning_action=DecisionAction.REVIEW,
+            default_info_action=DecisionAction.IGNORE,
+        )
+
+        # 1. Finding code override beats Rule ID mapping
+        action1 = config.resolve_action(
+            rule_id="TEST_RULE",
+            finding_code="OVERRIDE_CODE",
+            severity="ERROR",
+        )
+        assert action1 == DecisionAction.IGNORE
+
+        # 2. Rule ID mapping beats severity fallback
+        action2 = config.resolve_action(
+            rule_id="TEST_RULE",
+            finding_code="NON_OVERRIDDEN_CODE",
+            severity="INFO",
+        )
+        assert action2 == DecisionAction.BLOCK
+
+        # 3. Severity fallback is used when neither finding code nor rule ID is mapped
+        action3_err = config.resolve_action(
+            rule_id="UNMAPPED_RULE",
+            finding_code="UNMAPPED_CODE",
+            severity="ERROR",
+        )
+        assert action3_err == DecisionAction.BLOCK
+
+        action3_warn = config.resolve_action(
+            rule_id="UNMAPPED_RULE",
+            finding_code="UNMAPPED_CODE",
+            severity="WARNING",
+        )
+        assert action3_warn == DecisionAction.REVIEW
+
+        action3_info = config.resolve_action(
+            rule_id="UNMAPPED_RULE",
+            finding_code="UNMAPPED_CODE",
+            severity="INFO",
+        )
+        assert action3_info == DecisionAction.IGNORE
+
+
+class TestExplanationSanitization:
+    """Verifies that persisted reasons and recommendations do not leak sensitive or raw inputs."""
+
+    def test_account_holder_name_mismatch_sanitized(self):
+        """Account holder mismatch explanation must be generic and not leak raw submitted strings."""
+        raw_message = (
+            "Bank account holder name ('Confidential Parent Holdings LLC') "
+            "does not appear to match legal company name ('Secret Subsidiary Inc')."
+        )
+        finding = ValidationFinding(
+            rule_id="CONST_ACCOUNT_HOLDER_MATCH",
+            field="bank_account_holder_name",
+            severity=Severity.WARNING,
+            status="FAILED",
+            code="ACCOUNT_HOLDER_NAME_MISMATCH",
+            message=raw_message,
+        )
+
+        reason = map_finding_to_decision_reason(finding, DecisionAction.REVIEW)
+        assert reason.code == "ACCOUNT_HOLDER_NAME_MISMATCH"
+        assert reason.explanation == (
+            "The bank account holder name does not sufficiently match "
+            "the registered company or trade name."
+        )
+        assert "Confidential Parent Holdings LLC" not in reason.explanation
+        assert "Secret Subsidiary Inc" not in reason.explanation
+
+        rec = map_finding_to_recommendation(finding, DecisionAction.REVIEW)
+        assert rec is not None
+        assert rec.action == "VERIFY_ACCOUNT_HOLDER"
+        assert "Confidential" not in rec.description
+
+    def test_dummy_bank_account_sanitized(self):
+        """Dummy bank account sequence reason must not leak digits."""
+        finding = ValidationFinding(
+            rule_id="FMT_BANK_ACCOUNT_STRUCTURAL",
+            field="bank_account_number",
+            severity=Severity.ERROR,
+            status="FAILED",
+            code="DUMMY_ACCOUNT_SEQUENCE",
+            message="Bank account number appears to be an invalid placeholder sequence (repeated single digit).",
+        )
+
+        reason = map_finding_to_decision_reason(finding, DecisionAction.BLOCK)
+        assert "placeholder" in reason.explanation.lower()
+        rec = map_finding_to_recommendation(finding, DecisionAction.BLOCK)
+        assert rec is not None
+        assert rec.action == "PROVIDE_GENUINE_ACCOUNT_NUMBER"
 
 
 class TestDecisionEngineMapping:
@@ -266,7 +518,6 @@ class TestDecisionEngineMapping:
             status="FAILED",
             valid=False,
             summary=ValidationSummary(total_checks=3, passed=0, failed=1, warnings=1, info=1),
-            # Pass findings in arbitrary reverse order
             findings=[finding_info, finding_warn, finding_err],
             validated_at=datetime.now(timezone.utc),
             ruleset_version="1.0.0",
