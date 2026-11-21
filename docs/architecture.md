@@ -2,8 +2,8 @@
 ## Architecture Design Document — Vendor Onboarding Automation
 
 **Author:** Lead Software Engineer  
-**Version:** 2.1.0 (Phase 2 — Step 1: Document Intake & Secure Storage)  
-**Status:** Approved & Implemented Foundation, Security Hardening, Deterministic Validation, Decision Engine, End-to-End Integration, & Document Intake/Secure Storage  
+**Version:** 2.1.1 (Phase 2 — Step 1.1: Document Storage Resource & Lifecycle Hardening)  
+**Status:** Approved & Implemented Foundation, Security Hardening, Deterministic Validation, Decision Engine, End-to-End Integration, Document Intake, & Storage Hardening  
 
 ---
 
@@ -462,7 +462,33 @@ Document mutations automatically append events to the `VendorActivity` timeline:
 
 ---
 
-## 10. Dependency Reproducibility Strategy
+## 11. Phase 2 — Step 1.1: Document Storage Resource & Lifecycle Hardening
+
+Phase 2, Step 1.1 hardens the document intake and storage subsystem against resource exhaustion, symlink directory escapes, and split-brain states during deletion.
+
+### A. Bounded Upload Stream Processing
+- **Chunked Reading (`read_upload_file_bounded`):** Replaced monolithic in-memory reads (`await file.read()`) with bounded 64 KB chunked streaming up to `MAX_DOCUMENT_FILE_SIZE_BYTES` (10 MB).
+- **Fail-Fast Early Termination:** As soon as accumulated bytes exceed the configured size boundary, reading immediately aborts and raises `DocumentSizeExceededError` (mapped to `HTTP 413 Payload Too Large`). The remaining payload is discarded without buffering into memory.
+- **Guaranteed Resource Disposal:** Uses `try ... finally: await file.close()` to guarantee that temporary upload file handles and SpooledTemporaryFile backing stores are immediately reclaimed.
+- **Strict Content-Length Invalidation:** Does not trust spoofable client `Content-Length` headers; streaming byte counts are strictly validated in real time.
+
+### B. Hardened Path Containment & Symlink Defense
+- **Canonical Two-Part Segment Layout:** Enforces strict relative structure `<vendor_id>/<document_id>.enc` (and `.deleted` / `.tmp`).
+- **UUID Format Validation:** Both the vendor directory segment and document file stem must be valid RFC 4122 UUID strings, preventing arbitrary naming and shell injection attempts.
+- **Token & Traversal Rejection:** Null bytes (`\x00`), backslashes (`\`), path traversal tokens (`..`, `.`), and absolute paths are rejected with `StoragePathTraversalError`.
+- **Symlink Directory Containment:** Resolves real physical paths using `os.path.realpath` and validates strict containment via `Path.relative_to(storage_root)`. Traversal attempts through symlinks pointing outside the storage directory are trapped and rejected.
+- **Information Disclosure Prevention:** Storage exceptions and API error responses never expose internal server directory paths (e.g. `/Users/...` or `/data/...`).
+
+### C. Two-Phase Staged Deletion & Consistency Recovery
+- **Safe Pre-Mutation Staging (`stage_deletion`):** Before database modification, the physical `.enc` file is atomically renamed to `.enc.deleted`.
+- **Early Abort on Filesystem Failure:** If disk staging fails (e.g. permission error, unwritable media), the operation terminates immediately with `HTTP 500`. The database record is preserved, and no false `DOCUMENT_DELETED` activity log is emitted.
+- **Atomic Rollback Recovery (`rollback_staged_deletion`):** If the database transaction (deleting `VendorDocument` and creating `VendorActivity`) fails or is rolled back, the staged `.deleted` file is atomically restored back to `.enc` on disk.
+- **Finalized Physical Purge (`finalize_staged_deletion`):** Following database commit success, the staged file is permanently unlinked and empty vendor directories are cleaned up.
+- **Idempotent Orphan Cleanup:** If a physical file is already absent on disk, deletion completes idempotently, allowing orphaned database records to be cleanly expunged.
+
+---
+
+## 12. Dependency Reproducibility Strategy
 
 For a one-week case study project, dependency management balances determinism with zero unnecessary tool overhead:
 - **Backend:** Pin explicit, exact versions in `backend/requirements.txt` (`==` pinning). Standard installation via `python3 -m venv .venv && pip install -r requirements.txt`. Includes `cryptography==50.0.2` for authenticated encryption at rest.

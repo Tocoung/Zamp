@@ -239,19 +239,39 @@ class DocumentService:
         vendor_id: str,
         document_id: str,
     ) -> bool:
-        """Deletes a document record and its encrypted file on disk, logging the lifecycle event."""
+        """Deletes a document record and its encrypted file on disk, logging the lifecycle event.
+        
+        Uses a two-phase staged deletion pattern to prevent split-brain states:
+        1. Stage deletion on physical disk (rename to .deleted).
+           If disk staging fails (e.g., permissions, read-only disk), abort immediately:
+           DB record is NOT deleted and NO activity log is created.
+        2. Delete DB record and add activity log in a single atomic transaction.
+           If DB transaction fails, roll back the staged deletion back to .enc.
+        3. Finalize physical deletion.
+           Idempotent: if file was already missing from disk, DB record is cleanly removed.
+        """
         doc = self.get_document_metadata(db=db, vendor_id=vendor_id, document_id=document_id)
         storage_id = doc.storage_identifier
         category = doc.document_category
         filename = doc.sanitized_filename
+        vendor_status = doc.vendor.status if doc.vendor else "SUBMITTED"
 
-        # Record activity event
+        # Step 1: Stage deletion on disk before DB mutation
+        try:
+            staged_path = self.storage.stage_deletion(storage_id)
+        except Exception as e:
+            logger.error("Failed to stage document deletion in storage for %s: %s", storage_id, e)
+            raise DocumentServiceError(
+                f"Storage deletion failed: unable to stage document file for removal ({type(e).__name__})."
+            ) from e
+
+        # Step 2: Atomic database deletion and activity event creation
         activity = VendorActivity(
             vendor_id=str(vendor_id),
             event_type="DOCUMENT_DELETED",
             title="Supporting Document Deleted",
             description=f"Document deleted: '{filename}' [{category}].",
-            status=doc.vendor.status if doc.vendor else "SUBMITTED",
+            status=vendor_status,
         )
 
         try:
@@ -261,14 +281,17 @@ class DocumentService:
             logger.info("Deleted document record: id=%s, vendor_id=%s", document_id, vendor_id)
         except Exception as e:
             db.rollback()
+            # Rollback staged file on disk if DB commit fails
+            if staged_path:
+                self.storage.rollback_staged_deletion(storage_id)
             logger.error("Failed to delete document from database: %s", e)
             raise DocumentServiceError("Failed to delete document record. Transaction rolled back.") from e
 
-        # Remove physical file from disk
+        # Step 3: Finalize storage cleanup
         try:
-            self.storage.delete_document(storage_id)
+            self.storage.finalize_staged_deletion(storage_id)
         except Exception as e:
-            logger.warning("Document file disk deletion encountered an issue (non-fatal): %s", e)
+            logger.warning("Document file disk finalization encountered an issue (non-fatal): %s", e)
 
         return True
 

@@ -1,8 +1,8 @@
 # Zamp — AI-Powered Vendor Onboarding Automation
 
 > **Case Study:** Zamp AI Solutions Analyst Case Study  
-> **Phase:** 2 (Step 1 — Document Intake & Secure Storage)  
-> **Status:** Fully Integrated, Hardened, Tested, and Verified (133 Automated Tests Passing)  
+> **Phase:** 2 (Step 1.1 — Document Storage Resource & Lifecycle Hardening)  
+> **Status:** Fully Integrated, Hardened, Tested, and Verified (145 Automated Tests Passing)  
 
 An automated platform designed to streamline vendor company onboarding, compliance document intake & secure storage, multi-source verification, deterministic validation, explainable decisioning (`APPROVED` / `PENDING` / `REJECTED`), lifecycle activity tracking, and human-in-the-loop review.
 
@@ -432,6 +432,11 @@ Every document upload and deletion records an event in `VendorActivity`:
 - `DOCUMENT_UPLOADED`: Records filename, category, and formatted byte size.
 - `DOCUMENT_DELETED`: Records document deletion without leaking storage keys.
 
+### E. Storage Resource & Lifecycle Hardening (Phase 2, Step 1.1)
+- **Bounded Chunked Upload Reading:** Uploads are streamed in bounded 64 KB chunks (`read_upload_file_bounded`). As soon as accumulated payload size exceeds the 10 MB limit, reading halts immediately with `HTTP 413 Payload Too Large` without buffering the remaining payload into RAM. The underlying upload resource is safely closed in all cases.
+- **Strict Path Containment & Symlink Defense:** Internal storage paths are strictly normalized to `<vendor_id>/<document_id>.enc` with UUID format assertions. Null bytes (`\x00`), backslashes (`\`), path traversal tokens (`..`), and absolute paths are rejected with `StoragePathTraversalError`. Symlinks escaping the storage root are trapped via realpath verification. Internal server directory structures are masked from error messages.
+- **Two-Phase Staged Deletion & Self-Healing Consistency:** Document deletion stages disk files (`.enc` $\to$ `.enc.deleted`) before touching SQLite. If disk staging fails (e.g. read-only filesystem or permissions), the database record is preserved and no `DOCUMENT_DELETED` activity is emitted (`HTTP 500`). If the database transaction fails, the staged `.deleted` file is rolled back to `.enc`. Missing files on disk are handled idempotently.
+
 ---
 
 ## 9. Health & Readiness Probes
@@ -447,10 +452,10 @@ Every document upload and deletion records an event in `VendorActivity`:
 ```bash
 PYTHONPATH=backend backend/.venv/bin/pytest backend/tests/ -v
 ```
-**Result:** **133 passed in 0.61s** (Exit code: `0`).
+**Result:** **145 passed in 0.85s** (Exit code: `0`).
 
 Includes complete coverage across:
-- `test_documents.py`: 18 tests for document intake, PDF/PNG/JPEG validation, 10MB limits, magic bytes, path traversal sanitization, cross-vendor isolation, encrypted storage at rest, exact binary reproduction, and cascade deletion.
+- `test_documents.py`: 30 tests covering intake validation, bounded chunked streaming, 10MB exact boundary and 1-byte overflow checks, path traversal and symlink rejection, sanitized error messages, two-phase staged deletion failure handling, database rollback recovery, and idempotent missing file deletion.
 - `test_end_to_end_lifecycle.py`: 5 comprehensive lifecycle tests (Submission $\to$ Persistence $\to$ Validation $\to$ Decision $\to$ Status Update $\to$ History $\to$ Correction $\to$ Re-evaluation).
 - `test_decision_api.py`: 13 integration tests for decision routes, transactional integrity, and explainability.
 - `test_decision_engine.py`: 31 tests covering policy mapping, registry coverage, and action thresholds.

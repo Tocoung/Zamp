@@ -11,7 +11,8 @@ from app.services.document_service import (
     DocumentNotFoundError,
     DocumentServiceError,
 )
-from app.core.document_validator import DocumentValidationError
+from app.core.document_validator import DocumentValidationError, DocumentSizeExceededError, read_upload_file_bounded
+from app.core.config import settings
 from app.services.vendor_service import VendorNotFoundError
 from app.core.logging import logger
 
@@ -36,8 +37,16 @@ async def upload_document(
 ) -> VendorDocumentResponse:
     """Upload, validate, encrypt, and associate a supporting document with a vendor."""
     try:
-        # Read file contents into memory (bounded by 10 MB in document validator)
-        content = await file.read()
+        # Bounded streaming read in fixed chunks (stops immediately if max size exceeded)
+        content = await read_upload_file_bounded(
+            file=file,
+            max_size_bytes=settings.MAX_DOCUMENT_FILE_SIZE_BYTES,
+        )
+    except DocumentSizeExceededError as e:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=str(e),
+        )
     except Exception as e:
         logger.error("Failed to read uploaded file stream: %s", e)
         raise HTTPException(
@@ -59,6 +68,11 @@ async def upload_document(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Vendor with ID '{vendor_id}' not found.",
+        )
+    except DocumentSizeExceededError as e:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=str(e),
         )
     except DocumentValidationError as e:
         detail_msg = str(e)

@@ -4,7 +4,7 @@ import hashlib
 import os
 import uuid
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 from cryptography.fernet import Fernet, InvalidToken
 
 from app.core.config import settings
@@ -37,10 +37,13 @@ class DocumentStorage:
 
     def __init__(
         self,
-        storage_dir: Optional[Path] = None,
+        storage_dir: Optional[Union[str, Path]] = None,
         custom_key: Optional[str] = None,
     ):
-        self.storage_dir = (storage_dir or settings.resolved_document_storage_dir).resolve()
+        if storage_dir is not None:
+            self.storage_dir = Path(storage_dir).resolve()
+        else:
+            self.storage_dir = Path(settings.resolved_document_storage_dir).resolve()
         self.custom_key = custom_key
         self._cipher: Optional[Fernet] = None
 
@@ -65,26 +68,94 @@ class DocumentStorage:
     def _resolve_and_verify_path(self, storage_identifier: str) -> Path:
         """Resolve a relative storage identifier and verify path containment.
         
-        Strictly prevents directory traversal attempts.
+        Guarantees:
+        - Generated UUID-based identifiers remain the only identifiers used to construct storage paths.
+        - Resolved paths remain inside the configured storage root.
+        - Symlinks cannot be used to escape the storage root.
+        - Invalid, manipulated, or absolute identifiers fail safely.
+        - Errors do not disclose absolute filesystem paths.
         """
         if not storage_identifier or not str(storage_identifier).strip():
             raise StoragePathTraversalError("Storage identifier cannot be empty.")
 
-        # Clean string identifier
-        clean_id = str(storage_identifier).strip().replace("\\", "/")
-        target_path = (self.storage_dir / clean_id).resolve()
-        root_path = self.storage_dir.resolve()
+        raw_id = str(storage_identifier).strip()
+
+        # 1. Reject null bytes, backslashes, and absolute paths immediately
+        if "\x00" in raw_id:
+            raise StoragePathTraversalError("Invalid storage identifier: null bytes detected.")
+
+        if "\\" in raw_id:
+            raise StoragePathTraversalError("Backslash path separators are forbidden in storage identifiers.")
+
+        if raw_id.startswith("/") or Path(raw_id).is_absolute():
+            raise StoragePathTraversalError("Absolute paths are forbidden in storage identifiers.")
+
+        clean_id = raw_id
+
+        # 2. Reject traversal sequences ("..")
+        parts = clean_id.split("/")
+        if any(p in ("..", ".", "") for p in parts):
+            raise StoragePathTraversalError("Directory traversal sequences are forbidden.")
+
+        # 3. Enforce two-component layout: <vendor_id>/<doc_id_with_extension>
+        if len(parts) != 2:
+            raise StoragePathTraversalError("Storage identifier must have format '<vendor_id>/<filename>'.")
+
+        vendor_part, file_part = parts[0], parts[1]
+
+        # 4. Enforce UUID structure for vendor and document stem
+        try:
+            uuid.UUID(vendor_part)
+        except ValueError as e:
+            raise StoragePathTraversalError("Invalid vendor identifier format in storage path.") from e
+
+        # Extract stem before allowed extensions (.enc.deleted, .enc, .tmp)
+        doc_stem = file_part
+        allowed_suffixes = (".enc.deleted", ".enc", ".tmp")
+        matched_suffix = False
+        for sfx in allowed_suffixes:
+            if doc_stem.endswith(sfx):
+                doc_stem = doc_stem[:-len(sfx)]
+                matched_suffix = True
+                break
+
+        if not matched_suffix:
+            raise StoragePathTraversalError("Invalid document file extension in storage path.")
 
         try:
-            target_path.relative_to(root_path)
+            uuid.UUID(doc_stem)
         except ValueError as e:
-            logger.warning(
-                "Security violation: Directory traversal attempt detected: identifier=%r",
-                storage_identifier,
-            )
+            raise StoragePathTraversalError("Invalid document identifier format in storage path.") from e
+
+        # 5. Verify physical path containment & symlink escape prevention
+        root_path = Path(os.path.realpath(self.storage_dir))
+        raw_target = self.storage_dir / clean_id
+        real_target = Path(os.path.realpath(raw_target))
+
+        # Check containment via relative_to
+        try:
+            real_target.relative_to(root_path)
+        except ValueError as e:
+            logger.warning("Security violation: Storage path or symlink escapes storage root.")
             raise StoragePathTraversalError("Storage path is outside the allowed directory.") from e
 
-        return target_path
+        # Ensure target is not the root directory itself
+        if real_target == root_path:
+            raise StoragePathTraversalError("Storage identifier cannot resolve to the root directory.")
+
+        # Check if parent directory or target itself is an escaping symlink
+        check = self.storage_dir
+        for part in parts:
+            check = check / part
+            if check.is_symlink():
+                real_link = Path(os.path.realpath(check))
+                try:
+                    real_link.relative_to(root_path)
+                except ValueError as e:
+                    logger.warning("Security violation: Symlink inside storage directory escapes root: %s", part)
+                    raise StoragePathTraversalError("Symlink escape detected in storage path.") from e
+
+        return raw_target
 
     def store_document(
         self,
@@ -132,10 +203,12 @@ class DocumentStorage:
                     temp_file.unlink()
                 except OSError:
                     pass
-            raise StorageError(f"Failed to write encrypted document to disk: {e}") from e
+            logger.error("Failed to write encrypted document to disk: %s", type(e).__name__)
+            raise StorageError(f"Failed to write encrypted document to disk: {type(e).__name__}") from e
 
         # Relative storage identifier (never exposes absolute server paths)
-        return f"{vendor_id}/{document_id}.enc"
+        storage_id = f"{vendor_id}/{document_id}.enc"
+        return storage_id
 
     def retrieve_document(self, storage_identifier: str) -> bytes:
         """Locate, read, and decrypt a stored document blob.
@@ -154,12 +227,13 @@ class DocumentStorage:
         target_path = self._resolve_and_verify_path(storage_identifier)
 
         if not target_path.is_file():
-            raise StorageFileNotFoundError(f"Document file not found on disk: {storage_identifier}")
+            raise StorageFileNotFoundError("Document file not found on storage.")
 
         try:
             encrypted_bytes = target_path.read_bytes()
         except Exception as e:
-            raise StorageError(f"Failed to read document from disk: {e}") from e
+            logger.error("Failed to read document file: %s", type(e).__name__)
+            raise StorageError(f"Failed to read document from storage: {type(e).__name__}") from e
 
         try:
             return self.cipher.decrypt(encrypted_bytes)
@@ -174,26 +248,58 @@ class DocumentStorage:
         except Exception as e:
             raise StorageDecryptionError(f"Unexpected decryption failure: {type(e).__name__}") from e
 
-    def delete_document(self, storage_identifier: str) -> bool:
-        """Safely delete a stored document file from disk.
+    def stage_deletion(self, storage_identifier: str) -> Optional[Path]:
+        """Atomically stage a document file for deletion on disk (renaming to .deleted).
         
-        Args:
-            storage_identifier: Relative identifier of file to delete.
-            
+        Guarantees:
+        - Atomic rename prevents partial reads or race conditions during deletion.
+        - Missing files return None without error, enabling idempotent recovery.
+        - Filesystem errors (e.g. PermissionError) raise StorageError before DB mutation.
+        
         Returns:
-            True if file existed and was unlinked, False if file did not exist.
+            Path to staged file, or None if the file was already absent on disk.
         """
-        try:
-            target_path = self._resolve_and_verify_path(storage_identifier)
-        except StoragePathTraversalError:
-            return False
+        target_path = self._resolve_and_verify_path(storage_identifier)
+        staged_path = target_path.with_name(f"{target_path.name}.deleted")
 
         if not target_path.is_file():
-            return False
+            if staged_path.is_file():
+                return staged_path
+            return None
 
         try:
-            target_path.unlink()
-            # Attempt to clean up empty vendor folder if no other documents remain
+            target_path.replace(staged_path)
+            return staged_path
+        except Exception as e:
+            logger.error("Failed to stage physical document file for deletion: %s", type(e).__name__)
+            raise StorageError(f"Disk deletion staging failed: {type(e).__name__}") from e
+
+    def rollback_staged_deletion(self, storage_identifier: str) -> bool:
+        """Roll back a staged deletion by restoring the staged .deleted file to .enc."""
+        try:
+            target_path = self._resolve_and_verify_path(storage_identifier)
+            staged_path = target_path.with_name(f"{target_path.name}.deleted")
+            if staged_path.is_file():
+                staged_path.replace(target_path)
+                logger.info("Successfully rolled back staged document deletion: %s", storage_identifier)
+                return True
+            return False
+        except Exception as e:
+            logger.error("Failed to rollback staged deletion for %s: %s", storage_identifier, type(e).__name__)
+            return False
+
+    def finalize_staged_deletion(self, storage_identifier: str) -> bool:
+        """Permanently unlink the staged .deleted file and clean up empty parent directories."""
+        try:
+            target_path = self._resolve_and_verify_path(storage_identifier)
+            staged_path = target_path.with_name(f"{target_path.name}.deleted")
+
+            if staged_path.is_file():
+                staged_path.unlink()
+            elif target_path.is_file():
+                target_path.unlink()
+
+            # Clean up empty vendor directory if no other documents remain
             vendor_dir = target_path.parent
             if vendor_dir != self.storage_dir and vendor_dir.is_dir():
                 try:
@@ -203,8 +309,25 @@ class DocumentStorage:
                     pass
             return True
         except Exception as e:
-            logger.error("Failed to delete document file from disk: %s", e)
-            raise StorageError(f"Disk cleanup failed: {e}") from e
+            logger.error("Failed to finalize staged deletion for %s: %s", storage_identifier, type(e).__name__)
+            return False
+
+    def delete_document(self, storage_identifier: str, ignore_missing: bool = True) -> bool:
+        """Safely delete a stored document file from disk using staged deletion.
+        
+        Args:
+            storage_identifier: Relative identifier of file to delete.
+            ignore_missing: If True, absent files are treated idempotently as success.
+            
+        Returns:
+            True if file was deleted or was already absent (when ignore_missing=True).
+        """
+        staged_path = self.stage_deletion(storage_identifier)
+        if staged_path is None:
+            if not ignore_missing:
+                raise StorageFileNotFoundError("Document file not found on storage.")
+            return True
+        return self.finalize_staged_deletion(storage_identifier)
 
     @staticmethod
     def calculate_sha256(content: bytes) -> str:

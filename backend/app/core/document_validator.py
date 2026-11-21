@@ -7,9 +7,16 @@ from typing import Tuple, Dict, Any, Optional
 
 from app.core.config import settings
 
+MAX_DOCUMENT_FILE_SIZE_BYTES: int = getattr(settings, "MAX_DOCUMENT_FILE_SIZE_BYTES", 10 * 1024 * 1024)
+
 
 class DocumentValidationError(ValueError):
     """Raised when an uploaded document violates size, format, or security constraints."""
+    pass
+
+
+class DocumentSizeExceededError(DocumentValidationError):
+    """Raised when an uploaded document exceeds the maximum allowed file size."""
     pass
 
 
@@ -132,7 +139,7 @@ def validate_document_upload(
     file_size = len(content)
     if file_size > effective_max_size:
         max_mb = effective_max_size / (1024 * 1024)
-        raise DocumentValidationError(
+        raise DocumentSizeExceededError(
             f"Upload rejected: File size ({file_size / (1024 * 1024):.2f} MB) "
             f"exceeds maximum allowed limit of {max_mb:.0f} MB."
         )
@@ -198,3 +205,41 @@ def validate_document_upload(
             )
 
     return clean_filename, canonical_mime, ext, file_size
+
+
+async def read_upload_file_bounded(
+    file: Any,
+    max_size_bytes: Optional[int] = None,
+    chunk_size: int = 64 * 1024,
+) -> bytes:
+    """Read an UploadFile stream in fixed chunks, stopping immediately if max_size_bytes is exceeded.
+
+    Guarantees:
+    - Bounded memory reading in fixed chunk_size increments (default 64 KB).
+    - Stops reading and aborts immediately upon exceeding max_size_bytes without buffering remaining content.
+    - Closes temporary upload file resources cleanly in all paths (success, error, cancellation).
+    - Does not rely on Content-Length header as the only size check.
+    """
+    effective_max = max_size_bytes or settings.MAX_DOCUMENT_FILE_SIZE_BYTES
+    buffer = bytearray()
+    total_read = 0
+
+    try:
+        while True:
+            chunk = await file.read(chunk_size)
+            if not chunk:
+                break
+            total_read += len(chunk)
+            if total_read > effective_max:
+                max_mb = effective_max / (1024 * 1024)
+                raise DocumentSizeExceededError(
+                    f"Upload rejected: File size exceeds maximum allowed limit of {max_mb:.0f} MB."
+                )
+            buffer.extend(chunk)
+    finally:
+        try:
+            await file.close()
+        except Exception:
+            pass
+
+    return bytes(buffer)

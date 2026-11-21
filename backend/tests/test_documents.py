@@ -2,9 +2,10 @@
 
 import hashlib
 import io
+import os
 import uuid
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
@@ -12,8 +13,22 @@ from sqlalchemy.orm import Session
 from app.models.vendor import Vendor
 from app.models.document import VendorDocument
 from app.models.activity import VendorActivity
-from app.core.storage import DocumentStorage, StorageError
-from app.core.document_validator import validate_document_upload, DocumentValidationError, sanitize_filename
+from app.core.storage import (
+    DocumentStorage,
+    StorageError,
+    StoragePathTraversalError,
+    StorageFileNotFoundError,
+    document_storage,
+)
+from app.core.document_validator import (
+    validate_document_upload,
+    DocumentValidationError,
+    DocumentSizeExceededError,
+    read_upload_file_bounded,
+    MAX_DOCUMENT_FILE_SIZE_BYTES,
+    sanitize_filename,
+)
+from app.services.document_service import document_service, DocumentServiceError
 
 
 # Valid synthetic binary payloads with authentic magic signatures
@@ -397,3 +412,307 @@ class TestDocumentSecurityAndStorageAtRest:
         dl_res = client.get(f"/api/v1/vendors/{vendor_id}/documents/{doc_id}/content")
         assert dl_res.status_code == 500
         assert "decryption failed" in dl_res.json()["detail"].lower()
+
+
+class TestStep11BoundedUploadStreaming:
+    """Tests for Phase 2 Step 1.1 bounded upload reading and size boundary enforcement."""
+
+    @pytest.mark.asyncio
+    async def test_bounded_read_stops_immediately_on_oversized_stream(self):
+        """Verifies that reading terminates and aborts as soon as the limit is breached without consuming remaining stream."""
+        class MockStreamingUpload:
+            def __init__(self, chunk_size: int, total_chunks: int):
+                self.chunk_size = chunk_size
+                self.total_chunks = total_chunks
+                self.chunks_read = 0
+                self.closed = False
+
+            async def read(self, size: int = -1):
+                if self.chunks_read >= self.total_chunks:
+                    return b""
+                self.chunks_read += 1
+                return b"X" * self.chunk_size
+
+            async def close(self):
+                self.closed = True
+
+        # 10 chunks of 64 KB = 640 KB. Limit set to 128 KB.
+        # Should read chunk 1 (64 KB <= 128 KB), chunk 2 (128 KB <= 128 KB), chunk 3 (192 KB > 128 KB) -> abort!
+        mock_file = MockStreamingUpload(chunk_size=64 * 1024, total_chunks=10)
+        max_bytes = 128 * 1024
+
+        with pytest.raises(DocumentSizeExceededError) as exc_info:
+            await read_upload_file_bounded(
+                mock_file,  # type: ignore
+                max_size_bytes=max_bytes,
+                chunk_size=64 * 1024,
+            )
+
+        assert "exceeds maximum allowed limit" in str(exc_info.value)
+        # Verify it stopped at chunk 3, did not consume remaining 7 chunks
+        assert mock_file.chunks_read == 3
+        # Verify resource was safely closed in finally block
+        assert mock_file.closed is True
+
+    def test_upload_exact_max_size_limit_accepted(self, client: TestClient, test_vendor: dict):
+        """File at exactly 10 MB limit (10,485,760 bytes) is accepted."""
+        vendor_id = test_vendor["id"]
+        exact_limit = 10 * 1024 * 1024  # 10 MB
+
+        # Synthesize valid PDF of exact length
+        header = b"%PDF-1.7\n1 0 obj\n<< /Type /Catalog >>\nendobj\n"
+        footer = b"\ntrailer\n<< /Root 1 0 R >>\n%%EOF"
+        padding_len = exact_limit - len(header) - len(footer)
+        exact_pdf = header + (b" " * padding_len) + footer
+        assert len(exact_pdf) == exact_limit
+
+        files = {"file": ("exact_10mb.pdf", io.BytesIO(exact_pdf), "application/pdf")}
+        res = client.post(f"/api/v1/vendors/{vendor_id}/documents", files=files)
+        assert res.status_code == 201
+        doc = res.json()
+        assert doc["file_size_bytes"] == exact_limit
+        assert doc["sha256_checksum"] == hashlib.sha256(exact_pdf).hexdigest()
+
+        # Retrieve and verify exact bytes
+        dl_res = client.get(f"/api/v1/vendors/{vendor_id}/documents/{doc['id']}/content")
+        assert dl_res.status_code == 200
+        assert len(dl_res.content) == exact_limit
+
+    def test_upload_one_byte_over_limit_rejected_with_413(self, client: TestClient, test_vendor: dict):
+        """File at 10 MB + 1 byte is rejected immediately with 413 Payload Too Large."""
+        vendor_id = test_vendor["id"]
+        over_limit = (10 * 1024 * 1024) + 1
+
+        header = b"%PDF-1.7\n1 0 obj\n<< /Type /Catalog >>\nendobj\n"
+        footer = b"\ntrailer\n<< /Root 1 0 R >>\n%%EOF"
+        padding_len = over_limit - len(header) - len(footer)
+        oversized_pdf = header + (b" " * padding_len) + footer
+        assert len(oversized_pdf) == over_limit
+
+        files = {"file": ("over_limit.pdf", io.BytesIO(oversized_pdf), "application/pdf")}
+        res = client.post(f"/api/v1/vendors/{vendor_id}/documents", files=files)
+        assert res.status_code == 413
+        assert "exceeds maximum allowed limit" in res.json()["detail"]
+
+    def test_multi_chunk_valid_upload_succeeds(self, client: TestClient, test_vendor: dict):
+        """Multi-chunk valid upload (e.g. 200 KB spanning several 64 KB chunks) succeeds."""
+        vendor_id = test_vendor["id"]
+        total_len = 200 * 1024  # 200 KB > 3 chunks of 64 KB
+
+        header = b"%PDF-1.7\n1 0 obj\n<< /Type /Catalog >>\nendobj\n"
+        footer = b"\ntrailer\n<< /Root 1 0 R >>\n%%EOF"
+        padding_len = total_len - len(header) - len(footer)
+        multi_chunk_pdf = header + (b"0" * padding_len) + footer
+
+        files = {"file": ("multi_chunk.pdf", io.BytesIO(multi_chunk_pdf), "application/pdf")}
+        res = client.post(f"/api/v1/vendors/{vendor_id}/documents", files=files)
+        assert res.status_code == 201
+        doc = res.json()
+        assert doc["file_size_bytes"] == total_len
+
+
+class TestStep11PathContainmentAndSymlinkDefense:
+    """Tests for Phase 2 Step 1.1 hardened path resolution, symlink containment, and error sanitization."""
+
+    def test_path_traversal_sequences_rejected(self):
+        """Storage path resolver strictly rejects '..' and path traversal tokens."""
+        valid_vid = str(uuid.uuid4())
+        valid_did = str(uuid.uuid4())
+
+        traversal_attempts = [
+            f"../{valid_vid}/{valid_did}.enc",
+            f"{valid_vid}/../../{valid_did}.enc",
+            f"{valid_vid}/../{valid_did}.enc",
+            f"/{valid_vid}/{valid_did}.enc",
+            f"/etc/passwd",
+            f"..\\{valid_vid}\\{valid_did}.enc",
+            f"{valid_vid}\\{valid_did}.enc",
+            f"{valid_vid}/",
+            f"{valid_vid}/{valid_did}.enc/extra",
+        ]
+
+        for attempt in traversal_attempts:
+            with pytest.raises(StoragePathTraversalError):
+                document_storage._resolve_and_verify_path(attempt)
+
+    def test_null_bytes_in_path_rejected(self):
+        """Storage path resolver strictly rejects identifiers containing null bytes."""
+        valid_vid = str(uuid.uuid4())
+        valid_did = str(uuid.uuid4())
+
+        null_byte_attempts = [
+            f"{valid_vid}/{valid_did}\x00.enc",
+            f"{valid_vid}\x00/{valid_did}.enc",
+            f"\x00{valid_vid}/{valid_did}.enc",
+        ]
+
+        for attempt in null_byte_attempts:
+            with pytest.raises(StoragePathTraversalError):
+                document_storage._resolve_and_verify_path(attempt)
+
+    def test_invalid_uuid_identifiers_rejected(self):
+        """Storage path resolver rejects paths where directory or file stem is not a valid UUID."""
+        valid_vid = str(uuid.uuid4())
+        valid_did = str(uuid.uuid4())
+
+        invalid_identifiers = [
+            f"non_uuid_vendor/{valid_did}.enc",
+            f"{valid_vid}/non_uuid_doc.enc",
+            f"admin/{valid_did}.enc",
+            f"{valid_vid}/malicious.sh",
+            f"{valid_vid}/{valid_did}.txt",
+        ]
+
+        for attempt in invalid_identifiers:
+            with pytest.raises(StoragePathTraversalError):
+                document_storage._resolve_and_verify_path(attempt)
+
+    def test_symlink_escape_rejected(self, tmp_path: Path):
+        """Symlinks pointing outside storage directory are detected and rejected."""
+        custom_storage = DocumentStorage(storage_dir=str(tmp_path / "storage"))
+        custom_storage.ensure_storage_dir()
+
+        outside_dir = tmp_path / "outside_secret"
+        outside_dir.mkdir(parents=True)
+        secret_file = outside_dir / "secret.txt"
+        secret_file.write_text("classified data")
+
+        # Create symlink vendor directory pointing outside storage root
+        escaping_vendor_uuid = str(uuid.uuid4())
+        escaping_symlink = custom_storage.storage_dir / escaping_vendor_uuid
+        os.symlink(outside_dir, escaping_symlink)
+
+        valid_doc_id = str(uuid.uuid4())
+        with pytest.raises(StoragePathTraversalError) as exc_info:
+            custom_storage._resolve_and_verify_path(f"{escaping_vendor_uuid}/{valid_doc_id}.enc")
+
+        assert "outside" in str(exc_info.value).lower() or "symlink" in str(exc_info.value).lower()
+
+    def test_storage_errors_do_not_leak_absolute_paths(self):
+        """Storage exception messages must not reveal absolute server paths."""
+        valid_vid = str(uuid.uuid4())
+        valid_did = str(uuid.uuid4())
+
+        # Test traversal error message
+        try:
+            document_storage._resolve_and_verify_path(f"../../../etc/passwd")
+        except StoragePathTraversalError as e:
+            msg = str(e)
+            assert str(document_storage.storage_dir) not in msg
+            assert "/Users/" not in msg
+            assert "/etc" not in msg
+
+        # Test missing file error message
+        try:
+            document_storage.retrieve_document(f"{valid_vid}/{valid_did}.enc")
+        except StorageFileNotFoundError as e:
+            msg = str(e)
+            assert str(document_storage.storage_dir) not in msg
+            assert "/Users/" not in msg
+
+
+class TestStep11DeletionConsistencyAndRecovery:
+    """Tests for Phase 2 Step 1.1 two-phase staged deletion and failure recovery."""
+
+    def test_deletion_filesystem_failure_preserves_database_and_activity(
+        self, client: TestClient, test_db_session: Session, test_vendor: dict
+    ):
+        """If staging deletion fails on disk, database record is preserved and no deletion activity is emitted."""
+        vendor_id = test_vendor["id"]
+        f = {"file": ("contract.pdf", io.BytesIO(VALID_PDF_BYTES), "application/pdf")}
+        doc_id = client.post(f"/api/v1/vendors/{vendor_id}/documents", files=f).json()["id"]
+
+        # Verify initial database state
+        db_doc = test_db_session.get(VendorDocument, doc_id)
+        assert db_doc is not None
+
+        # Count activities before delete
+        act_before = client.get(f"/api/v1/vendors/{vendor_id}/activities").json()["items"]
+        delete_events_before = [a for a in act_before if a["event_type"] == "DOCUMENT_DELETED"]
+
+        # Simulate filesystem failure during stage_deletion
+        with patch.object(
+            document_service.storage,
+            "stage_deletion",
+            side_effect=StorageError("Simulated disk write permission failure"),
+        ):
+            res = client.delete(f"/api/v1/vendors/{vendor_id}/documents/{doc_id}")
+            assert res.status_code == 500
+            assert "unable to stage document file for removal" in res.json()["detail"].lower()
+
+        # Verify database record STILL exists
+        test_db_session.expire_all()
+        db_doc_after = test_db_session.get(VendorDocument, doc_id)
+        assert db_doc_after is not None
+
+        # Verify no DOCUMENT_DELETED activity was logged
+        act_after = client.get(f"/api/v1/vendors/{vendor_id}/activities").json()["items"]
+        delete_events_after = [a for a in act_after if a["event_type"] == "DOCUMENT_DELETED"]
+        assert len(delete_events_after) == len(delete_events_before)
+
+    def test_deletion_database_failure_rolls_back_staged_file(
+        self, test_db_session: Session, test_vendor: dict
+    ):
+        """If database commit fails during deletion, staged .deleted file is rolled back to original .enc."""
+        vendor_id = test_vendor["id"]
+
+        # Directly upload via service
+        doc = document_service.upload_vendor_document(
+            db=test_db_session,
+            vendor_id=vendor_id,
+            filename="financials.pdf",
+            declared_content_type="application/pdf",
+            content=VALID_PDF_BYTES,
+        )
+        storage_id = doc.storage_identifier
+        target_path = document_service.storage._resolve_and_verify_path(storage_id)
+        assert target_path.is_file()
+
+        # Simulate database failure during commit
+        with patch.object(test_db_session, "commit", side_effect=Exception("Simulated SQLite lock error")):
+            with pytest.raises(DocumentServiceError) as exc_info:
+                document_service.delete_vendor_document(
+                    db=test_db_session,
+                    vendor_id=vendor_id,
+                    document_id=doc.id,
+                )
+            assert "transaction rolled back" in str(exc_info.value).lower()
+
+        # Staged .deleted file MUST have been rolled back to .enc
+        staged_path = target_path.with_name(f"{target_path.name}.deleted")
+        assert not staged_path.exists()
+        assert target_path.is_file()
+
+        # Stored file can still be read and decrypted cleanly
+        retrieved_content = document_service.storage.retrieve_document(storage_id)
+        assert retrieved_content == VALID_PDF_BYTES
+
+    def test_deletion_missing_file_handled_idempotently(
+        self, client: TestClient, test_db_session: Session, test_vendor: dict
+    ):
+        """Deleting a document whose physical file is already missing completes idempotently."""
+        vendor_id = test_vendor["id"]
+        f = {"file": ("orphan_candidate.pdf", io.BytesIO(VALID_PDF_BYTES), "application/pdf")}
+        doc_id = client.post(f"/api/v1/vendors/{vendor_id}/documents", files=f).json()["id"]
+
+        db_doc = test_db_session.get(VendorDocument, doc_id)
+        assert db_doc is not None
+        storage_path = document_service.storage._resolve_and_verify_path(db_doc.storage_identifier)
+
+        # Manually unlink file from disk to simulate orphaned DB record
+        if storage_path.is_file():
+            storage_path.unlink()
+
+        # Delete via API
+        del_res = client.delete(f"/api/v1/vendors/{vendor_id}/documents/{doc_id}")
+        assert del_res.status_code == 204
+
+        # DB record is cleanly removed
+        test_db_session.expire_all()
+        assert test_db_session.get(VendorDocument, doc_id) is None
+
+        # Activity log is recorded
+        act_res = client.get(f"/api/v1/vendors/{vendor_id}/activities")
+        assert act_res.status_code == 200
+        event_types = [a["event_type"] for a in act_res.json()["items"]]
+        assert "DOCUMENT_DELETED" in event_types
