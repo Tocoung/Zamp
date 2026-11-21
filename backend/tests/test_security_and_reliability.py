@@ -249,7 +249,37 @@ class TestStartupReliability:
                 with pytest.raises(RuntimeError) as exc_info:
                     async with lifespan(app):
                         pass
-                assert "Database schema initialization or migration failed" in str(exc_info.value)
+                assert "Database schema initialization failed" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_startup_fails_when_encryption_key_is_absent(self):
+        """Lifespan refuses to start when VENDOR_DATA_ENCRYPTION_KEY is absent."""
+        from app.main import app, lifespan
+        from app.core.config import settings
+
+        with patch.object(settings, "VENDOR_DATA_ENCRYPTION_KEY", None):
+            with patch("app.main.check_db_connection", return_value=True):
+                with patch("app.db.base.Base.metadata.create_all"):
+                    with pytest.raises(RuntimeError) as exc_info:
+                        async with lifespan(app):
+                            pass
+                    assert "Application startup aborted: Encryption key is absent or invalid" in str(exc_info.value)
+                    assert "EncryptionConfigurationError" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_startup_fails_when_encryption_key_is_invalid(self):
+        """Lifespan refuses to start when VENDOR_DATA_ENCRYPTION_KEY is malformed."""
+        from app.main import app, lifespan
+        from app.core.config import settings
+
+        with patch.object(settings, "VENDOR_DATA_ENCRYPTION_KEY", "not-a-valid-base64-key"):
+            with patch("app.main.check_db_connection", return_value=True):
+                with patch("app.db.base.Base.metadata.create_all"):
+                    with pytest.raises(RuntimeError) as exc_info:
+                        async with lifespan(app):
+                            pass
+                    assert "Application startup aborted: Encryption key is absent or invalid" in str(exc_info.value)
+                    assert "EncryptionConfigurationError" in str(exc_info.value)
 
     def test_existing_database_contents_survive_initialization(self, test_engine, test_db_session: Session):
         """Re-invoking Base.metadata.create_all() does not drop existing vendor records."""

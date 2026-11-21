@@ -47,15 +47,24 @@ async def lifespan(app: FastAPI):
         from app.models.vendor import Vendor  # noqa: F401 - ensure vendor model registered
         Base.metadata.create_all(bind=engine)
         logger.info("Database schema verified and initialized.")
-
-        # Idempotently migrate legacy plaintext records if encryption key is configured
-        if settings.VENDOR_DATA_ENCRYPTION_KEY:
-            from app.core.security import migrate_legacy_vendor_accounts
-            with SessionLocal() as migration_session:
-                migrate_legacy_vendor_accounts(migration_session)
     except Exception as e:
-        logger.critical(f"Schema initialization or migration failed during startup: {type(e).__name__}")
-        raise RuntimeError(f"Database schema initialization or migration failed: {type(e).__name__}") from e
+        logger.critical(f"Database schema initialization failed during startup: {type(e).__name__}")
+        raise RuntimeError(f"Database schema initialization failed: {type(e).__name__}") from e
+
+    # Startup validation: verify sensitive data encryption key is configured and valid
+    try:
+        from app.core.security import get_fernet_cipher, migrate_legacy_vendor_accounts
+        get_fernet_cipher()
+        logger.info("Encryption key validated for sensitive financial data at rest.")
+
+        # Idempotently migrate legacy plaintext records
+        with SessionLocal() as migration_session:
+            migrate_legacy_vendor_accounts(migration_session)
+    except Exception as e:
+        logger.critical(f"Encryption configuration check failed during startup: {type(e).__name__}")
+        raise RuntimeError(
+            f"Application startup aborted: Encryption key is absent or invalid ({type(e).__name__})."
+        ) from e
 
     yield
 
