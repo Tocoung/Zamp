@@ -422,3 +422,76 @@ export async function getDecisionHistory(
 
   return response.json();
 }
+
+export interface VendorActivityItem {
+  id: string;
+  vendor_id: string;
+  event_type: string;
+  title: string;
+  description: string;
+  status?: string | null;
+  created_at: string;
+}
+
+export interface VendorActivityPagination {
+  items: VendorActivityItem[];
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+}
+
+export async function fetchVendorActivities(
+  vendorId: string,
+  page = 1,
+  pageSize = 20
+): Promise<VendorActivityPagination> {
+  const response = await fetch(
+    `${API_BASE_URL}/vendors/${vendorId}/activities?page=${page}&page_size=${pageSize}`,
+    {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+      },
+    }
+  );
+
+  if (!response.ok) {
+    if (response.status === 404) {
+      throw new Error(`Vendor with ID '${vendorId}' not found`);
+    }
+    throw new Error(`Failed to fetch vendor activities (HTTP ${response.status})`);
+  }
+
+  return response.json();
+}
+
+export async function updateVendor(
+  vendorId: string,
+  payload: Partial<VendorCreatePayload>
+): Promise<VendorResponse> {
+  const response = await fetch(`${API_BASE_URL}/vendors/${vendorId}`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    if (response.status === 404) {
+      throw new Error(`Vendor with ID '${vendorId}' not found`);
+    }
+    let errorMessage = `Failed to update vendor (HTTP ${response.status})`;
+    try {
+      const errData = await response.json();
+      if (errData.detail) errorMessage = errData.detail;
+    } catch {
+      // fallback
+    }
+    throw new Error(errorMessage);
+  }
+
+  return response.json();
+}

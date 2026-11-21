@@ -46,6 +46,7 @@ async def lifespan(app: FastAPI):
         from app.db.session import engine, SessionLocal
         from app.models.vendor import Vendor  # noqa: F401 - ensure vendor model registered
         from app.models.decision import VendorDecision  # noqa: F401 - ensure decision model registered
+        from app.models.activity import VendorActivity  # noqa: F401 - ensure activity model registered
         Base.metadata.create_all(bind=engine)
         logger.info("Database schema verified and initialized.")
     except Exception as e:
@@ -55,12 +56,14 @@ async def lifespan(app: FastAPI):
     # Startup validation: verify sensitive data encryption key is configured and valid
     try:
         from app.core.security import get_fernet_cipher, migrate_legacy_vendor_accounts
+        from app.db.migrate_activities import backfill_legacy_vendor_activities
         get_fernet_cipher()
         logger.info("Encryption key validated for sensitive financial data at rest.")
 
-        # Idempotently migrate legacy plaintext records
+        # Idempotently migrate legacy records and backfill lifecycle activities
         with SessionLocal() as migration_session:
             migrate_legacy_vendor_accounts(migration_session)
+            backfill_legacy_vendor_activities(migration_session)
     except Exception as e:
         logger.critical(f"Encryption configuration check failed during startup: {type(e).__name__}")
         raise RuntimeError(

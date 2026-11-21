@@ -80,6 +80,14 @@ class Vendor(Base):
         order_by="desc(VendorDecision.decided_at)",
     )
 
+    # Lifecycle activity history relationship
+    activities = relationship(
+        "VendorActivity",
+        back_populates="vendor",
+        cascade="all, delete-orphan",
+        order_by="asc(VendorActivity.created_at)",
+    )
+
     __table_args__ = (
         Index("ix_vendors_country_reg", "country_of_incorporation", "registration_number"),
         Index("ix_vendors_tax_jurisdiction", "country_of_incorporation", "tax_id_type", "tax_id_number"),

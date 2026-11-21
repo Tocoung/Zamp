@@ -2,8 +2,8 @@
 ## Architecture Design Document — Vendor Onboarding Automation
 
 **Author:** Lead Software Engineer  
-**Version:** 1.4.0 (Phase 1 — Step 4: Decision Engine & Explainability)  
-**Status:** Approved & Implemented Foundation, Security Hardening, Deterministic Validation, & Decision Engine  
+**Version:** 1.5.0 (Phase 1 — Step 5: End-to-End Integration & Testing)  
+**Status:** Approved & Implemented Foundation, Security Hardening, Deterministic Validation, Decision Engine, & End-to-End Integration  
 
 ---
 
@@ -271,7 +271,77 @@ Full registry coverage is programmatically verified using `DecisionConfig.verify
 
 ---
 
-## 8. Five-Phase Implementation Roadmap
+## 8. End-to-End Integration & Lifecycle Mechanics (Step 5)
+
+Phase 1 Step 5 connects intake, persistence, validation, decisioning, profile updates, and audit history into a cohesive operational workflow:
+
+```
++----------------------------------------------------------------------------------------------------+
+|                                    END-TO-END LIFECYCLE FLOW                                       |
+|                                                                                                    |
+|  [Vendor Intake UI]                                                                                |
+|          |                                                                                         |
+|          v POST /api/v1/vendors                                                                    |
+|  [Vendor Model + Fernet Encryption] --------> [VendorActivity: VENDOR_SUBMITTED]                   |
+|          |                                                                                         |
+|          +------------------------------------+                                                    |
+|          | (On-Demand Dry-Run)                | (Authoritative Decision)                           |
+|          v POST /vendors/{id}/validate        v POST /vendors/{id}/decide                          |
+|  [Validation Engine Execution]        [Decision Engine Policy Mapping]                             |
+|          | (In-Memory Decryption)             |                                                    |
+|          v                                    +---> [vendor_decisions Audit Snapshot]              |
+|  [Validation Findings Summary]                +---> [Vendor.status = APPROVED | PENDING | REJECTED]|
+|  (Zero Status Mutation)                       +---> [VendorActivity: DECISION_EXECUTED]            |
+|                                               |                                                    |
+|                                               v                                                    |
+|                                    [Vendor Detail Modal]                                           |
+|                                    - Decision Banner & Recommendations                             |
+|                                    - Activity History Timeline                                     |
+|                                    - Edit / Correct Profile Mode                                   |
+|                                               |                                                    |
+|                                               v PUT /api/v1/vendors/{id}                           |
+|                                    [Encrypted Attribute Update]                                    |
+|                                               |                                                    |
+|                                               +---> [VendorActivity: VENDOR_UPDATED]               |
+|                                               v                                                    |
+|                                    [Re-evaluate Decision: POST /decide]                            |
+|                                               |                                                    |
+|                                               +---> [Append New Decision to History]               |
+|                                               +---> [Vendor.status = APPROVED]                     |
+|                                               +---> [VendorActivity: DECISION_REEVALUATED]         |
++----------------------------------------------------------------------------------------------------+
+```
+
+### A. Dual-History Architecture
+To address distinct operational and regulatory requirements without architectural pollution, the platform implements two decoupled historical persistence models:
+1. **Decision Audit History (`vendor_decisions`):**
+   - **Entity:** `VendorDecision` (`models/decision.py`)
+   - **Scope:** Immutable compliance record generated strictly by the decision engine.
+   - **Payload:** Serialized validation findings (`validation_snapshot`), stable programmatic reason codes (`reason_codes`), human-readable explanations, and prioritized next-step recommendations.
+   - **Security Guarantee:** Evaluated validation findings are sanitized; raw banking account numbers and encryption tokens are strictly excluded.
+2. **Lifecycle Execution History (`vendor_activities`):**
+   - **Entity:** `VendorActivity` (`models/activity.py`)
+   - **Scope:** Chronological operational event feed tracking discrete lifecycle actions.
+   - **Payload:** `event_type` (`VENDOR_SUBMITTED`, `DECISION_EXECUTED`, `VENDOR_UPDATED`, `DECISION_REEVALUATED`), title, safe description, and resulting status.
+   - **Security Guarantee:** Activity descriptions never echo raw bank accounts, tax IDs, or cryptographic tokens.
+
+### B. Safe Technical Error Handling (Decryption Hardening)
+- Across all inspection and decision endpoints (`POST /vendors/{id}/validate`, `POST /vendors/{id}/decide`), cryptographic and decryption failures are caught explicitly.
+- In the event of ciphertext corruption or missing keys, the endpoint halts immediately with `HTTP 500 Internal Server Error` without mutating database state.
+- Crucially, cryptographic failures are **never** swallowed or converted into false "missing field" validation findings.
+
+### C. Synthetic Demonstration Data Seeder
+- Managed via `backend/app/scripts/seed_demo_data.py`.
+- Generates 4 realistic vendors matching all 4 core business scenarios:
+  - Clean Indian vendor submission $\rightarrow$ `APPROVED`
+  - Incomplete vendor submission (missing registration & phone) $\rightarrow$ `PENDING`
+  - Name discrepancy (account holder vs. legal entity) $\rightarrow$ `PENDING`
+  - Blocking statutory syntax error (malformed GSTIN) $\rightarrow$ `REJECTED`
+- Supports `--reset` for isolated cleanup without affecting real vendor records, and `--no-decisions` for initial intake state demonstration.
+
+---
+
+## 9. Five-Phase Implementation Roadmap
 
 Boundaries are strictly maintained between completed steps and planned future modules:
 
@@ -283,7 +353,7 @@ flowchart TD
         F2_1 --> F3["Step 3: Deterministic Validation Engine (IMPLEMENTED)"]
         F3 --> F4["Step 4: Decision Engine & Explainability (IMPLEMENTED)"]
         F4 --> F4_1["Step 4.1: Decision Policy & Evidence Hardening (IMPLEMENTED)"]
-        F4_1 --> F5["Step 5: End-to-End Integration (PLANNED)"]
+        F4_1 --> F5["Step 5: End-to-End Integration (IMPLEMENTED)"]
     end
 
     subgraph P2["Phase 2: Intelligent Document Processing & Verification"]
@@ -324,7 +394,7 @@ flowchart TD
 | **Deterministic Validation Engine** | Phase 1 (Step 3) | **Implemented** | `backend/app/validation/`, `backend/tests/test_validation_*.py` |
 | **Decision Engine (Approved/Pending/Rejected)** | Phase 1 (Step 4) | **Implemented** | `backend/app/decision/`, `backend/app/services/decision_service.py` |
 | **Decision Policy & Evidence Hardening** | Phase 1 (Step 4.1) | **Implemented** | `backend/app/decision/config.py`, `backend/app/decision/rules.py`, `backend/app/services/decision_service.py` |
-| **End-to-End Core Integration** | Phase 1 (Step 5) | *Planned* | `backend/app/api/v1/endpoints/vendors.py` |
+| **End-to-End Core Integration & Activity History** | Phase 1 (Step 5) | **Implemented** | `backend/app/api/v1/endpoints/vendors.py`, `backend/app/models/activity.py`, `backend/app/scripts/seed_demo_data.py`, `frontend/src/components/VendorActivityTimeline.tsx` |
 | **Document Processing & OCR** | Phase 2 | *Planned* | `backend/app/services/document_service.py` |
 | **Human-in-the-Loop Review** | Phase 3 | *Planned* | `backend/app/services/review_service.py` |
 | **Audit Trail & Logging** | Phase 4 | *Planned* | `backend/app/services/audit_service.py` |
@@ -332,7 +402,7 @@ flowchart TD
 
 ---
 
-## 9. Dependency Reproducibility Strategy
+## 10. Dependency Reproducibility Strategy
 
 For a one-week case study project, dependency management balances determinism with zero unnecessary tool overhead:
 - **Backend:** Pin explicit, exact versions in `backend/requirements.txt` (`==` pinning). Standard installation via `python3 -m venv .venv && pip install -r requirements.txt`. Includes `cryptography==50.0.2` for authenticated encryption at rest.

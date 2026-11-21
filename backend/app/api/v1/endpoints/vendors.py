@@ -6,9 +6,14 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.schemas.vendor import (
     VendorCreate,
+    VendorUpdate,
     VendorResponse,
     VendorPagination,
     VendorSummary,
+)
+from app.schemas.activity import (
+    VendorActivityItem,
+    VendorActivityPagination,
 )
 from app.services.vendor_service import vendor_service, VendorServiceError
 from app.core.security import EncryptionError, decrypt_account_number
@@ -171,20 +176,106 @@ def validate_existing_vendor(
     }
 
     # Decrypt bank account number strictly in memory for structural checks
-    try:
-        decrypted_account = decrypt_account_number(
-            vendor.bank_account_number,
-            allow_legacy_plaintext=True,
-        )
-        vendor_dict["bank_account_number"] = decrypted_account
-    except Exception as e:
-        logger.error("Failed to decrypt account number for validation: %s", type(e).__name__)
+    if vendor.bank_account_number and str(vendor.bank_account_number).strip():
+        try:
+            decrypted_account = decrypt_account_number(
+                vendor.bank_account_number,
+                allow_legacy_plaintext=True,
+            )
+            vendor_dict["bank_account_number"] = decrypted_account
+        except EncryptionError as e:
+            logger.error(
+                "Security/cryptography error decrypting bank account during validation: class=%s, vendor_id=%s",
+                type(e).__name__,
+                vendor.id,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Security or data integrity error: Sensitive banking data could not be safely decrypted for validation.",
+            ) from e
+        except Exception as e:
+            logger.error(
+                "Unexpected technical error decrypting bank account during validation: class=%s, vendor_id=%s",
+                type(e).__name__,
+                vendor.id,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Security or data integrity error: Sensitive banking data could not be safely decrypted for validation.",
+            ) from e
+    else:
         vendor_dict["bank_account_number"] = None
 
     return validation_engine.validate_vendor(
         vendor_data=vendor_dict,
         vendor_id=vendor.id,
         context={"is_stored_record": True, "stored_status": vendor.status},
+    )
+
+
+@router.put(
+    "/{vendor_id}",
+    response_model=VendorResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Update Vendor Details",
+    description="Updates editable profile details for an existing vendor. Encrypts sensitive banking data if modified and logs a lifecycle update event.",
+)
+def update_vendor(
+    vendor_id: str,
+    vendor_in: VendorUpdate,
+    db: Session = Depends(get_db),
+) -> VendorResponse:
+    """Update profile and registration details of an existing vendor."""
+    try:
+        updated = vendor_service.update_vendor(db=db, vendor_id=vendor_id, vendor_in=vendor_in)
+        return VendorResponse.from_orm_model(updated)
+    except VendorNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Vendor with ID '{vendor_id}' not found",
+        )
+    except EncryptionError:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Security error: Failed to safely encrypt updated banking data.",
+        )
+    except VendorServiceError:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Persistence error: Failed to update vendor record. Transaction has been rolled back.",
+        )
+
+
+@router.get(
+    "/{vendor_id}/activities",
+    response_model=VendorActivityPagination,
+    status_code=status.HTTP_200_OK,
+    summary="List Vendor Lifecycle Activities",
+    description="Returns a paginated list of lifecycle activity events for a vendor in deterministic chronological order.",
+)
+def list_vendor_activities(
+    vendor_id: str,
+    page: int = Query(1, ge=1, description="Page number starting at 1"),
+    page_size: int = Query(20, ge=1, le=100, description="Items per page"),
+    db: Session = Depends(get_db),
+) -> VendorActivityPagination:
+    """Retrieve chronologically ordered lifecycle events for a vendor."""
+    vendor = vendor_service.get_vendor_by_id(db=db, vendor_id=vendor_id)
+    if not vendor:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Vendor with ID '{vendor_id}' not found",
+        )
+    activities, total, total_pages = vendor_service.get_vendor_activities(
+        db=db, vendor_id=vendor_id, page=page, page_size=page_size
+    )
+    items = [VendorActivityItem.model_validate(a) for a in activities]
+    return VendorActivityPagination(
+        items=items,
+        total=total,
+        page=page,
+        page_size=page_size,
+        total_pages=total_pages,
     )
 
 

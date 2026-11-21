@@ -97,6 +97,37 @@ class VendorCreate(VendorBase):
         return v
 
 
+class VendorUpdate(BaseModel):
+    """Schema for updating an existing vendor record with optional fields."""
+    legal_name: Optional[str] = Field(None, max_length=255)
+    trade_name: Optional[str] = Field(None, max_length=255)
+    business_type: Optional[str] = Field(None, max_length=50)
+    country_of_incorporation: Optional[str] = Field(None, max_length=100)
+    registration_number: Optional[str] = Field(None, max_length=100)
+
+    contact_name: Optional[str] = Field(None, max_length=255)
+    contact_email: Optional[str] = Field(None, max_length=255)
+    contact_phone: Optional[str] = Field(None, max_length=50)
+
+    address_line1: Optional[str] = Field(None, max_length=255)
+    address_line2: Optional[str] = Field(None, max_length=255)
+    city: Optional[str] = Field(None, max_length=100)
+    state_province: Optional[str] = Field(None, max_length=100)
+    postal_code: Optional[str] = Field(None, max_length=20)
+    address_country: Optional[str] = Field(None, max_length=100)
+
+    tax_id_type: Optional[str] = Field(None, max_length=50)
+    tax_id_number: Optional[str] = Field(None, max_length=100)
+
+    bank_account_holder_name: Optional[str] = Field(None, max_length=255)
+    bank_name: Optional[str] = Field(None, max_length=255)
+    bank_routing_number: Optional[str] = Field(None, max_length=50)
+    bank_country: Optional[str] = Field(None, max_length=100)
+    bank_account_number: Optional[str] = Field(None, max_length=100)
+
+    model_config = ConfigDict(extra="ignore")
+
+
 class VendorResponse(BaseModel):
     """Full vendor record response with masked banking account number."""
     id: str = Field(..., examples=["123e4567-e89b-12d3-a456-426614174000"])

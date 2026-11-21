@@ -7,13 +7,19 @@ from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 
 from app.models.vendor import Vendor
-from app.schemas.vendor import VendorCreate
+from app.models.activity import VendorActivity
+from app.schemas.vendor import VendorCreate, VendorUpdate
 from app.core.logging import logger
 from app.core.security import encrypt_account_number
 
 
 class VendorServiceError(Exception):
     """Raised when vendor persistence or retrieval operations fail."""
+    pass
+
+
+class VendorNotFoundError(VendorServiceError):
+    """Raised when a vendor ID does not match any record."""
     pass
 
 
@@ -59,8 +65,17 @@ class VendorService:
             status="SUBMITTED",
         )
 
+        initial_activity = VendorActivity(
+            vendor_id=vendor_id,
+            event_type="VENDOR_SUBMITTED",
+            title="Vendor Registration Submitted",
+            description="Initial vendor registration submitted with status SUBMITTED.",
+            status="SUBMITTED",
+        )
+
         try:
             db.add(vendor)
+            db.add(initial_activity)
             db.commit()
             db.refresh(vendor)
         except Exception as e:
@@ -72,10 +87,77 @@ class VendorService:
         return vendor
 
     @staticmethod
+    def update_vendor(db: Session, vendor_id: str, vendor_in: VendorUpdate) -> Vendor:
+        """Updates editable attributes of an existing vendor record."""
+        vendor = db.get(Vendor, vendor_id)
+        if not vendor:
+            raise VendorNotFoundError(f"Vendor with ID '{vendor_id}' not found")
+
+        update_data = vendor_in.model_dump(exclude_unset=True)
+        if not update_data:
+            return vendor
+
+        # Encrypt banking account number at rest if updated
+        if "bank_account_number" in update_data and update_data["bank_account_number"]:
+            update_data["bank_account_number"] = encrypt_account_number(
+                update_data["bank_account_number"]
+            )
+
+        for key, val in update_data.items():
+            setattr(vendor, key, val)
+
+        activity = VendorActivity(
+            vendor_id=vendor.id,
+            event_type="VENDOR_UPDATED",
+            title="Vendor Details Updated",
+            description="Vendor profile and registration information updated.",
+            status=vendor.status,
+        )
+
+        try:
+            db.add(activity)
+            db.commit()
+            db.refresh(vendor)
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Failed to update vendor record: {type(e).__name__}")
+            raise VendorServiceError("Failed to update vendor record. Transaction has been rolled back.") from e
+
+        logger.info(f"Vendor record updated successfully: id={vendor.id}")
+        return vendor
+
+    @staticmethod
     def get_vendor_by_id(db: Session, vendor_id: str) -> Optional[Vendor]:
         """Retrieves a single vendor by UUID."""
         stmt = select(Vendor).where(Vendor.id == vendor_id)
         return db.scalar(stmt)
+
+    @staticmethod
+    def get_vendor_activities(
+        db: Session,
+        vendor_id: str,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> Tuple[List[VendorActivity], int, int]:
+        """Retrieves paginated lifecycle activities for a vendor in chronological order."""
+        page = max(1, page)
+        page_size = max(1, min(page_size, 100))
+        offset = (page - 1) * page_size
+
+        total_stmt = select(func.count(VendorActivity.id)).where(VendorActivity.vendor_id == vendor_id)
+        total_count = db.scalar(total_stmt) or 0
+
+        query_stmt = (
+            select(VendorActivity)
+            .where(VendorActivity.vendor_id == vendor_id)
+            .order_by(VendorActivity.created_at.asc(), VendorActivity.id.asc())
+            .offset(offset)
+            .limit(page_size)
+        )
+        activities = list(db.scalars(query_stmt).all())
+        total_pages = math.ceil(total_count / page_size) if total_count > 0 else 1
+
+        return activities, total_count, total_pages
 
     @staticmethod
     def get_vendors_paginated(

@@ -1,24 +1,25 @@
 # Zamp — AI-Powered Vendor Onboarding Automation
 
 > **Case Study:** Zamp AI Solutions Analyst Case Study  
-> **Phase:** 1 (Step 4.1 — Decision Policy & Evidence Hardening)  
-> **Status:** Fully Hardened, Unit-Tested, and Verified (110 Automated Tests Passing)  
+> **Phase:** 1 (Step 5 — End-to-End Integration & Testing)  
+> **Status:** Fully Integrated, Hardened, Tested, and Verified (115 Automated Tests Passing)  
 
-An automated platform designed to streamline vendor company onboarding, compliance document extraction, multi-source verification, deterministic validation, explainable decisioning (`APPROVED` / `PENDING` / `REJECTED`), and human-in-the-loop review.
+An automated platform designed to streamline vendor company onboarding, compliance document extraction, multi-source verification, deterministic validation, explainable decisioning (`APPROVED` / `PENDING` / `REJECTED`), lifecycle activity tracking, and human-in-the-loop review.
 
 ---
 
 ## 1. Architecture & Technology Stack
 
-The project uses a clean **Modular Monolith** architecture with decoupled presentation, validation, decision, and service layers:
+The project uses a clean **Modular Monolith** architecture with decoupled presentation, validation, decision, activity, and service layers:
 
-- **Frontend:** React 18 + TypeScript + Vite + Tailwind CSS + Lucide React
+- **Frontend:** React 18 + TypeScript + Vite + Tailwind CSS + Lucide React (Vendor intake form, vendor directory, full profile inspection, decision explanation, in-modal edit/correction mode, and chronological activity timeline)
 - **Backend:** Python 3.9+ + FastAPI + Pydantic v2 + Uvicorn + Cryptography (Fernet)
 - **Validation Engine:** Modular, decoupled rule engine (`backend/app/validation/`) evaluating 28 deterministic rules across required fields, country-aware statutory formats, and cross-field consistency.
 - **Decision Engine:** Deterministic business policy and explainability engine (`backend/app/decision/`) assigning `APPROVED`, `PENDING`, or `REJECTED` outcomes with stable reason codes and actionable recommendations.
+- **Activity & Lifecycle History:** Dedicated `vendor_activities` table tracking discrete lifecycle events (`VENDOR_SUBMITTED`, `DECISION_EXECUTED`, `VENDOR_UPDATED`, `DECISION_REEVALUATED`) in deterministic chronological order with zero sensitive financial data leakage.
 - **Persistence:** SQLAlchemy 2.0 (Active: SQLite with deterministic path resolution; Production interface: PostgreSQL via `DATABASE_URL` with driver).
-- **Audit History:** Dedicated `vendor_decisions` table preserving historical decision snapshots transactionally without duplicating sensitive banking data.
-- **Testing:** Pytest + FastAPI TestClient with temporary isolated SQLite databases (**110 automated tests passing**).
+- **Audit History:** Dedicated `vendor_decisions` table preserving immutable decision snapshots transactionally without duplicating sensitive banking data.
+- **Testing:** Pytest + FastAPI TestClient with temporary isolated SQLite databases (**115 automated tests passing**).
 
 Detailed architectural boundaries and module roadmaps can be found in [docs/architecture.md](docs/architecture.md).
 
@@ -99,7 +100,106 @@ Decisions are persisted non-destructively in SQLite via the `vendor_decisions` t
 
 ---
 
-## 3. Sample Decision Outputs
+## 3. End-to-End Vendor Onboarding Integration (Step 5)
+
+Phase 1 Step 5 integrates all previous milestones into a unified, operational end-to-end lifecycle:
+
+```
+[Vendor Registration Intake]
+             |
+             v
+ [Encrypted Persistence (Fernet)]  ---> [Activity: VENDOR_SUBMITTED]
+             |
+             v
+ [Deterministic Validation Engine]  (Evaluates 28 statutory & consistency rules)
+             |
+             v
+ [Explainable Decision Engine]     (Applies BLOCK/REVIEW/IGNORE policies)
+             |
+             +---> [Persist Decision Snapshot (vendor_decisions)]
+             +---> [Atomic Status Transition (APPROVED | PENDING | REJECTED)]
+             +---> [Activity: DECISION_EXECUTED]
+             |
+   +---------+---------+
+   |                   |
+[APPROVED]        [PENDING / REJECTED]
+   |                   |
+   |              [Operator/Vendor Profile Correction via UI]
+   |                   |
+   |                   v
+   |             [Encrypted Update] ---> [Activity: VENDOR_UPDATED]
+   |                   |
+   |                   v
+   |             [Re-evaluation via POST /decide]
+   |                   |
+   |                   +---> [Append Decision Snapshot to History]
+   |                   +---> [Update Status: APPROVED]
+   |                   +---> [Activity: DECISION_REEVALUATED]
+```
+
+### A. Lifecycle Architecture & Data Flow
+1. **Intake & Submission:** Vendor enters identity, address, tax, and banking details. Banking account numbers are encrypted at rest with Fernet (`AES-128-CBC + HMAC-SHA256`) and masked in all responses. The initial record is saved with status `SUBMITTED`, and a `VENDOR_SUBMITTED` activity event is recorded.
+2. **On-Demand Validation:** Operators can validate records via `POST /api/v1/vendors/{id}/validate`. The endpoint decrypts banking data strictly in memory, runs validation rules, and returns a detailed finding report without altering vendor status.
+3. **Deterministic Decisioning:** Invoking `POST /api/v1/vendors/{id}/decide` computes validation findings once, maps them to `BLOCK`, `REVIEW`, or `IGNORE` actions, determines the outcome (`APPROVED`, `PENDING`, `REJECTED`), persists an immutable audit snapshot in `vendor_decisions`, updates `Vendor.status`, and logs `DECISION_EXECUTED` (or `DECISION_REEVALUATED`).
+4. **Interactive Profile Correction:** If a vendor receives `PENDING` (e.g. account holder name mismatch or missing non-blocking fields), compliance operators can switch the detail modal to "Edit / Correct", update the attributes via `PUT /api/v1/vendors/{id}`, and immediately trigger re-evaluation.
+
+### B. Dual-History Architecture: Decision Audit vs. Activity Timeline
+To maintain clean separation between compliance audits and operational monitoring:
+
+| Dimension | Decision History (`VendorDecision`) | Activity Timeline (`VendorActivity`) |
+|---|---|---|
+| **Table** | `vendor_decisions` | `vendor_activities` |
+| **Purpose** | Regulatory compliance & explainability audit trail. | Chronological operational lifecycle execution history. |
+| **Data Stored** | Full sanitized validation snapshot, stable reason codes, policy explanations, actionable recommendations. | Discrete event classification (`VENDOR_SUBMITTED`, `DECISION_EXECUTED`, `VENDOR_UPDATED`, `DECISION_REEVALUATED`), human-readable title, safe summary, and status snapshot. |
+| **Access Patterns** | Query latest decision (`GET /vendors/{id}/decision`) or paginated history (`GET /vendors/{id}/decision-history`). | Paginated chronological event feed (`GET /vendors/{id}/activities?page=1&page_size=20`). |
+| **Security** | Zero raw bank accounts or encryption tokens in snapshot. | Zero raw banking data, tax IDs, or cryptographic tokens in descriptions. |
+
+### C. Decryption Failure Hardening across Endpoints
+In accordance with Step 2.1 and Step 5 hardening:
+- Both `POST /api/v1/vendors/{id}/validate` and `POST /api/v1/vendors/{id}/decide` safely handle cryptographic or key failures.
+- If a stored bank account number cannot be decrypted (corrupted ciphertext token, incorrect key), the backend logs a security error and raises `HTTP 500 Internal Server Error` (`Security or data integrity error: Sensitive banking data could not be safely decrypted for validation`).
+- The system **never** catches decryption failures and falls back to reporting `bank_account_number` as missing, preventing false validation findings or accidental status corruption.
+
+---
+
+## 4. Synthetic Demonstration Data Seeder
+
+A dedicated seeder script (`backend/app/scripts/seed_demo_data.py`) generates 4 distinct, realistic, and explicitly synthetic demonstration vendors:
+
+| Scenario | Vendor Name | Incorporation | Key Finding / Condition | Expected Outcome |
+|---|---|---|---|---|
+| **1. Clean Happy Path** | Solaris Tech Labs Private Limited `[DEMO]` | India | All mandatory fields present, valid GSTIN & IFSC, matching bank account holder. | **`APPROVED`** |
+| **2. Missing Mandatory Fields** | Nova Dynamics India Pvt Ltd `[DEMO]` | India | Missing mandatory company registration number and contact phone number. | **`PENDING`** (Recommendations request missing data) |
+| **3. Consistency Discrepancy** | Zenith Global Logistics LLP `[DEMO]` | India | Bank account holder name (`Zenith Logistics Escrow Agency`) differs from company name. | **`PENDING`** (Recommendations request account ownership verification) |
+| **4. Blocking Format Error** | Vortex Industrial Supplies Inc `[DEMO]` | India | Malformed statutory GSTIN syntax (`33INVALID_SYNTAX_999`). | **`REJECTED`** (Recommendations request valid tax certificate) |
+
+### CLI Usage & Flags
+```bash
+# Seed 4 demo vendors and evaluate their initial decisions (idempotent):
+python backend/app/scripts/seed_demo_data.py
+
+# Seed demo vendors in initial SUBMITTED state without running decisions:
+python backend/app/scripts/seed_demo_data.py --no-decisions
+
+# Safely reset/remove all demo records without touching real vendor records:
+python backend/app/scripts/seed_demo_data.py --reset
+```
+
+### End-to-End Live Demonstration Walkthrough
+1. **Review Seeded Vendors:** Open `http://localhost:5173` to view the Vendor Directory. Observe the 4 seeded demo vendors categorized by their distinct statuses (`APPROVED`, `PENDING`, `REJECTED`).
+2. **Inspect Decision & Activity Timeline:** Click on **Zenith Global Logistics LLP `[DEMO]`**.
+   - Review the Decision Banner (`PENDING`), the reason code `ACCOUNT_HOLDER_NAME_MISMATCH`, and actionable recommendations.
+   - Inspect the **Lifecycle Activity Timeline** showing `Vendor Registration Submitted` and `Decision Executed`.
+3. **Correct Profile & Re-evaluate:**
+   - Click **Edit / Correct Profile**.
+   - Change Bank Account Holder Name to `Zenith Global Logistics LLP`.
+   - Click **Save Changes**. Note the timeline appends `Vendor Profile Updated`.
+   - Click **Evaluate Decision**. Observe the status update to **`APPROVED`**.
+   - Check Decision Audit History: shows 2 historical decisions (latest `APPROVED`, prior `PENDING`).
+
+---
+
+## 5. Sample Decision Outputs
 
 ### A. Approved Vendor (`APPROVED`)
 ```json
@@ -278,7 +378,7 @@ Decisions are persisted non-destructively in SQLite via the `vendor_decisions` t
 
 ---
 
-## 4. Deterministic Validation Engine (Step 3 Recap)
+## 6. Deterministic Validation Engine (Step 3 Recap)
 
 The underlying validation engine resides in `backend/app/validation/`:
 - **Ruleset Version:** `1.0.0`
@@ -290,32 +390,54 @@ The underlying validation engine resides in `backend/app/validation/`:
 
 ---
 
-## 5. Security & Reliability Architecture (Step 2.1 Recap)
+## 7. Security & Reliability Architecture (Step 2.1 Recap)
 
 - **Encryption at Rest:** Bank account numbers are encrypted using Fernet (`AES-128-CBC + HMAC-SHA256`).
 - **Fail-Safe Startup:** If `VENDOR_DATA_ENCRYPTION_KEY` is missing or invalid, application startup aborts immediately.
 - **Masking:** API responses and UI screens only display masked account numbers (`••••••••5678`).
-- **Zero Sensitive Data in Decision History:** Raw account numbers are strictly excluded from `validation_snapshot` and decision explanations.
+- **Zero Sensitive Data in Decision History:** Raw account numbers are strictly excluded from `validation_snapshot`, decision explanations, and lifecycle activities.
 
 ---
 
-## 6. Health & Readiness Probes
+## 8. Health & Readiness Probes
 
 - **`GET /healthz` (Liveness):** Process check (`200 OK`, `{"status": "alive"}`).
 - **`GET /readyz` (Readiness):** Dependency probe (`200 OK` with database connected; `503 Service Unavailable` if degraded).
 
 ---
 
-## 7. Verification & Test Execution
+## 9. Verification & Test Execution
 
 ### Backend Automated Test Suite
 ```bash
-backend/.venv/bin/pytest backend/tests -v
+PYTHONPATH=backend backend/.venv/bin/pytest backend/tests/ -v
 ```
-**Result:** **110 passed in 2.52s** (Exit code: `0`).
+**Result:** **115 passed in 0.35s** (Exit code: `0`).
+
+Includes complete coverage across:
+- `test_end_to_end_lifecycle.py`: 5 comprehensive lifecycle tests (Submission $\to$ Persistence $\to$ Validation $\to$ Decision $\to$ Status Update $\to$ History $\to$ Correction $\to$ Re-evaluation, decryption failure hardening, seeder scenarios and idempotency, activity history pagination and masking).
+- `test_decision_api.py`: 13 integration tests for decision routes, transactional integrity, and explainability.
+- `test_decision_engine.py`: 31 tests covering policy mapping, registry coverage, and action thresholds.
+- `test_validation_rules.py`: 18 tests for country-specific statutory formats and consistency.
+- `test_validation_engine.py`: 6 tests for engine orchestration and finding aggregation.
+- `test_validation_api.py`: 5 tests for validation endpoints.
+- `test_security_and_reliability.py`: 15 tests for Fernet encryption, key rotation, and migration.
+- `test_vendors.py`: 10 tests for intake validation, persistence, and account masking.
+- `test_health.py` & `test_config.py`: 12 tests for operational health probes and environment config.
 
 ### Frontend Production Build
 ```bash
 npm --prefix frontend run build
 ```
-**Result:** Compiled successfully with Vite v5.4.21 (Exit code: `0`).
+**Result:** Compiled cleanly with TypeScript and Vite v5.4.21 (Exit code: `0`).
+
+---
+
+## 10. Scope Boundaries & Deferred Capabilities (Beyond Phase 1)
+
+In strict adherence to Phase 1 boundaries, the following advanced capabilities are deliberately deferred to future roadmap phases:
+- **Optical Character Recognition (OCR):** Automated extraction from scanned PDF/image bank statements and incorporation certificates (Planned: Phase 2).
+- **Multi-Source Cross-Verification:** Automated reconciliation between uploaded document OCR outputs, tax authority registries, and web intake data (Planned: Phase 3).
+- **LLM / GenAI Agents:** Autonomous natural language explanations or agentic clarification emails (Planned: Phase 4).
+- **Full Human-in-the-Loop Workflow Queues:** Dedicated role-based multi-user review queues, ticketing, and exception routing (Planned: Phase 5).
+- **Distributed Event-Sourcing Infrastructure:** Kafka / Debezium audit buses and external key vaults (Production infrastructure roadmap).

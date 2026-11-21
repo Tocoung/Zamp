@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.models.vendor import Vendor
 from app.models.decision import VendorDecision
+from app.models.activity import VendorActivity
 from app.decision.models import (
     DecisionHistoryItem,
     DecisionReason,
@@ -155,9 +156,32 @@ class DecisionService:
             decided_at=decision_result.decided_at,
         )
 
-        # 6. Transactional commit: persist decision record and update vendor status
+        # 6. Lifecycle activity tracking: check prior decision count
+        prior_decisions_count = db.scalar(
+            select(func.count(VendorDecision.id)).where(VendorDecision.vendor_id == vendor.id)
+        ) or 0
+
+        if prior_decisions_count == 0:
+            activity = VendorActivity(
+                vendor_id=vendor.id,
+                event_type="DECISION_EXECUTED",
+                title="Deterministic Decision Executed",
+                description=f"Initial automated evaluation: status assigned is {decision_result.status.value}.",
+                status=decision_result.status.value,
+            )
+        else:
+            activity = VendorActivity(
+                vendor_id=vendor.id,
+                event_type="DECISION_REEVALUATED",
+                title="Decision Re-evaluated",
+                description=f"Automated re-evaluation complete: status assigned is {decision_result.status.value} (iteration #{prior_decisions_count + 1}).",
+                status=decision_result.status.value,
+            )
+
+        # 7. Transactional commit: persist decision record, activity, and update vendor status
         try:
             db.add(decision_record)
+            db.add(activity)
             vendor.status = decision_result.status.value
             db.commit()
             db.refresh(decision_record)
