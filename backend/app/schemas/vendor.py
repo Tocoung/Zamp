@@ -110,6 +110,8 @@ class VendorResponse(VendorBase):
     @classmethod
     def from_orm_model(cls, vendor) -> "VendorResponse":
         """Factory to construct response with sanitized/masked banking info."""
+        from app.core.security import decrypt_account_number
+        plain_account = decrypt_account_number(vendor.bank_account_number, allow_legacy_plaintext=True)
         return cls(
             id=vendor.id,
             legal_name=vendor.legal_name,
@@ -132,7 +134,7 @@ class VendorResponse(VendorBase):
             bank_name=vendor.bank_name,
             bank_routing_number=vendor.bank_routing_number,
             bank_country=vendor.bank_country,
-            bank_account_number_masked=mask_bank_account(vendor.bank_account_number),
+            bank_account_number_masked=mask_bank_account(plain_account),
             status=vendor.status,
             created_at=vendor.created_at,
             updated_at=vendor.updated_at,

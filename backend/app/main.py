@@ -34,19 +34,28 @@ async def lifespan(app: FastAPI):
     
     # Startup validation: verify database connectivity
     db_ok = check_db_connection()
-    if db_ok:
-        logger.info("Database connection successfully established.")
-        # Ensure database tables exist (safe initialization: CREATE TABLE IF NOT EXISTS)
-        try:
-            from app.db.base import Base
-            from app.db.session import engine
-            import app.models  # noqa: F401 - registers models
-            Base.metadata.create_all(bind=engine)
-            logger.info("Database schema verified and initialized.")
-        except Exception as e:
-            logger.error(f"Error during schema initialization: {e}")
-    else:
-        logger.warning("Database connection failed during startup. Operating in degraded mode.")
+    if not db_ok:
+        logger.critical("Database connection check failed during startup. Aborting application startup.")
+        raise RuntimeError("Database connection unavailable during application startup.")
+
+    logger.info("Database connection successfully established.")
+    
+    # Ensure database tables exist (non-destructive: CREATE TABLE IF NOT EXISTS)
+    try:
+        from app.db.base import Base
+        from app.db.session import engine, SessionLocal
+        from app.models.vendor import Vendor  # noqa: F401 - ensure vendor model registered
+        Base.metadata.create_all(bind=engine)
+        logger.info("Database schema verified and initialized.")
+
+        # Idempotently migrate legacy plaintext records if encryption key is configured
+        if settings.VENDOR_DATA_ENCRYPTION_KEY:
+            from app.core.security import migrate_legacy_vendor_accounts
+            with SessionLocal() as migration_session:
+                migrate_legacy_vendor_accounts(migration_session)
+    except Exception as e:
+        logger.critical(f"Schema initialization or migration failed during startup: {type(e).__name__}")
+        raise RuntimeError(f"Database schema initialization or migration failed: {type(e).__name__}") from e
 
     yield
 

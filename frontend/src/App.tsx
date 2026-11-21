@@ -18,6 +18,11 @@ import {
 
 export const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'directory' | 'register' | 'architecture'>('directory');
+  const [directoryRefreshTrigger, setDirectoryRefreshTrigger] = useState(0);
+
+  const handleVendorCreated = () => {
+    setDirectoryRefreshTrigger((prev) => prev + 1);
+  };
 
   return (
     <div className="min-h-screen flex flex-col bg-slate-50">
@@ -107,11 +112,17 @@ export const App: React.FC = () => {
 
         {/* Tab Content */}
         {activeTab === 'directory' && (
-          <VendorList onNavigateToForm={() => setActiveTab('register')} />
+          <VendorList
+            key={directoryRefreshTrigger}
+            onNavigateToForm={() => setActiveTab('register')}
+          />
         )}
 
         {activeTab === 'register' && (
-          <VendorForm onNavigateToDirectory={() => setActiveTab('directory')} />
+          <VendorForm
+            onVendorCreated={handleVendorCreated}
+            onNavigateToDirectory={() => setActiveTab('directory')}
+          />
         )}
 
         {activeTab === 'architecture' && (
@@ -122,10 +133,10 @@ export const App: React.FC = () => {
             <div className="bg-sky-50/60 border border-sky-200/80 rounded-xl p-5 text-xs text-sky-900">
               <div className="font-semibold text-sm flex items-center mb-1 text-sky-950">
                 <ArrowRight className="w-4 h-4 mr-1 text-sky-700" />
-                Phase 1 — Step 2 Scope Demarcation
+                Phase 1 — Step 2.1 Scope Demarcation
               </div>
               <p className="text-sky-800 leading-relaxed">
-                Step 2 delivers the structured vendor data model, multi-section registration form with client validation, persistent database storage, and a paginated directory with masked banking credentials. In accordance with strict incremental delivery, document uploads, OCR processing, cross-document reconciliation, automated approval/rejection decision engines, and human-in-the-loop exception workflows are scheduled for subsequent project phases.
+                Step 2.1 hardens vendor data security and system reliability: bank account numbers are authenticated-encrypted at rest (AES-128-CBC + HMAC via Fernet), failed transactions roll back cleanly, startup aborts clearly if database connectivity or schema fails, pagination ordering is strictly deterministic via composite keys, and duplicate submission locking is enforced. In accordance with strict incremental delivery, tax/routing algorithmic validation, automated decision engines, OCR extraction, and human review remain deferred to subsequent steps.
               </p>
             </div>
           </div>

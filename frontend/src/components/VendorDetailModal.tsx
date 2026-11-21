@@ -181,7 +181,7 @@ export const VendorDetailModal: React.FC<VendorDetailModalProps> = ({
           <div className="space-y-2">
             <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
               <CreditCard className="w-3.5 h-3.5 text-sky-600" />
-              Banking Details (Secured)
+              Banking Details (Account Number Encrypted)
             </h4>
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 p-3.5 rounded-xl bg-slate-50/70 border border-slate-200/80 text-xs">
               <div>
@@ -212,8 +212,10 @@ export const VendorDetailModal: React.FC<VendorDetailModalProps> = ({
               </div>
             </div>
             <div className="flex items-center gap-1.5 text-[11px] text-slate-500 px-1">
-              <Shield className="w-3.5 h-3.5 text-emerald-600" />
-              <span>Full account number is encrypted/masked across all client views and audit logs.</span>
+              <Shield className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+              <span>
+                Bank account number is encrypted at rest (AES-128-CBC + HMAC via Fernet) and masked in UI views. Routing numbers and tax IDs are unencrypted.
+              </span>
             </div>
           </div>
 

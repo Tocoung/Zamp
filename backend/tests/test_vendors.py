@@ -195,5 +195,9 @@ class TestDatabasePersistenceAndIsolation:
         assert db_record.id == created_id
         assert db_record.registration_number == unique_reg
         assert db_record.status == "SUBMITTED"
-        # Bank account is stored raw in DB for internal banking integrations
-        assert db_record.bank_account_number == payload["bank_account_number"]
+        # Bank account is encrypted at rest using Fernet with version prefix
+        from app.core.security import decrypt_account_number, is_encrypted
+        assert is_encrypted(db_record.bank_account_number)
+        assert db_record.bank_account_number != payload["bank_account_number"]
+        assert db_record.bank_account_number.startswith("enc:v1:")
+        assert decrypt_account_number(db_record.bank_account_number) == payload["bank_account_number"]

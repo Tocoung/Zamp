@@ -2,7 +2,7 @@
 
 import os
 from pathlib import Path
-from typing import List, Union
+from typing import List, Union, Optional
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import make_url
@@ -64,6 +64,10 @@ class Settings(BaseSettings):
     # Database connection URL
     # Default: Relative SQLite URL, resolved deterministically against PROJECT_ROOT
     DATABASE_URL: str = "sqlite:///./vendor_onboarding.db"
+
+    # Data Encryption at rest (Fernet 32-byte URL-safe base64 key)
+    # Must be set in environment. Never logged or exposed.
+    VENDOR_DATA_ENCRYPTION_KEY: Optional[str] = None
 
     @property
     def resolved_database_url(self) -> str:

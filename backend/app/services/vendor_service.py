@@ -9,6 +9,12 @@ from sqlalchemy.orm import Session
 from app.models.vendor import Vendor
 from app.schemas.vendor import VendorCreate
 from app.core.logging import logger
+from app.core.security import encrypt_account_number
+
+
+class VendorServiceError(Exception):
+    """Raised when vendor persistence or retrieval operations fail."""
+    pass
 
 
 class VendorService:
@@ -18,11 +24,15 @@ class VendorService:
     def create_vendor(db: Session, vendor_in: VendorCreate) -> Vendor:
         """Persists a new vendor record with initial SUBMITTED status.
         
-        Note on security: Bank account number is stored in the database but
-        is NEVER printed to application logs or console streams.
+        Security: Bank account number is encrypted at rest using Fernet
+        (AES-128-CBC + HMAC-SHA256) and is NEVER logged to application logs.
+        Transaction is committed safely; rollback is guaranteed on any failure.
         """
         vendor_id = str(uuid.uuid4())
         
+        # Authenticated encryption at rest
+        encrypted_account = encrypt_account_number(vendor_in.bank_account_number)
+
         vendor = Vendor(
             id=vendor_id,
             legal_name=vendor_in.legal_name,
@@ -43,15 +53,20 @@ class VendorService:
             tax_id_number=vendor_in.tax_id_number,
             bank_account_holder_name=vendor_in.bank_account_holder_name,
             bank_name=vendor_in.bank_name,
-            bank_account_number=vendor_in.bank_account_number,
+            bank_account_number=encrypted_account,
             bank_routing_number=vendor_in.bank_routing_number,
             bank_country=vendor_in.bank_country,
             status="SUBMITTED",
         )
 
-        db.add(vendor)
-        db.commit()
-        db.refresh(vendor)
+        try:
+            db.add(vendor)
+            db.commit()
+            db.refresh(vendor)
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Failed to persist vendor record: {type(e).__name__}")
+            raise VendorServiceError("Database persistence failed. Transaction has been rolled back.") from e
 
         logger.info(f"Vendor record created successfully: id={vendor.id}, legal_name={vendor.legal_name!r}")
         return vendor
@@ -66,7 +81,10 @@ class VendorService:
     def get_vendors_paginated(
         db: Session, page: int = 1, page_size: int = 10
     ) -> Tuple[List[Vendor], int, int]:
-        """Retrieves a paginated list of vendor records sorted by creation date descending.
+        """Retrieves a paginated list of vendor records.
+        
+        Ordering: Uses stable composite sort (created_at DESC, id ASC) to guarantee
+        strictly deterministic pagination across page boundaries.
         
         Returns:
             Tuple of (items, total_count, total_pages)
@@ -78,11 +96,11 @@ class VendorService:
         total_stmt = select(func.count(Vendor.id))
         total_count = db.scalar(total_stmt) or 0
 
-        # Query page slice
+        # Query page slice with deterministic ordering
         offset = (page - 1) * page_size
         query_stmt = (
             select(Vendor)
-            .order_by(Vendor.created_at.desc())
+            .order_by(Vendor.created_at.desc(), Vendor.id.asc())
             .offset(offset)
             .limit(page_size)
         )

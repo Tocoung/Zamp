@@ -20,6 +20,11 @@ from app.db.base import Base
 from app.models.vendor import Vendor  # noqa: F401 - ensures vendor model is registered
 from app.db.session import get_db, check_db_connection
 
+# Ensure deterministic encryption key for test session
+TEST_ENCRYPTION_KEY = "sDZE3eR9rZ3WLY4Q0q13RZnSBUVqD5kiHFjO6bXbHhs="
+if not settings.VENDOR_DATA_ENCRYPTION_KEY:
+    settings.VENDOR_DATA_ENCRYPTION_KEY = TEST_ENCRYPTION_KEY
+
 
 @pytest.fixture(scope="session")
 def test_db_path(tmp_path_factory) -> Path:

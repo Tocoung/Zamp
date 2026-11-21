@@ -48,7 +48,7 @@ class Vendor(Base):
     # E. Banking information
     bank_account_holder_name: Mapped[str] = mapped_column(String(255), nullable=False)
     bank_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    bank_account_number: Mapped[str] = mapped_column(String(100), nullable=False)
+    bank_account_number: Mapped[str] = mapped_column(String(255), nullable=False)
     bank_routing_number: Mapped[str] = mapped_column(String(50), nullable=False)
     bank_country: Mapped[str] = mapped_column(String(100), nullable=False)
 

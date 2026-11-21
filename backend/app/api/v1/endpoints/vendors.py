@@ -10,7 +10,8 @@ from app.schemas.vendor import (
     VendorPagination,
     VendorSummary,
 )
-from app.services.vendor_service import vendor_service
+from app.services.vendor_service import vendor_service, VendorServiceError
+from app.core.security import EncryptionError
 
 router = APIRouter()
 
@@ -20,15 +21,26 @@ router = APIRouter()
     response_model=VendorResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Register Vendor",
-    description="Validates and registers a new vendor. Generates UUID and initial SUBMITTED status.",
+    description="Validates and registers a new vendor. Encrypts banking data at rest and assigns initial SUBMITTED status.",
 )
 def create_vendor(
     vendor_in: VendorCreate,
     db: Session = Depends(get_db),
 ) -> VendorResponse:
     """Create and persist a new vendor record."""
-    vendor = vendor_service.create_vendor(db=db, vendor_in=vendor_in)
-    return VendorResponse.from_orm_model(vendor)
+    try:
+        vendor = vendor_service.create_vendor(db=db, vendor_in=vendor_in)
+        return VendorResponse.from_orm_model(vendor)
+    except EncryptionError:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Security error: Vendor data encryption failed. Submission aborted safely.",
+        )
+    except VendorServiceError:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Persistence error: Failed to save vendor record. Database transaction has been rolled back.",
+        )
 
 
 @router.get(
@@ -36,7 +48,7 @@ def create_vendor(
     response_model=VendorPagination,
     status_code=status.HTTP_200_OK,
     summary="List Vendors (Paginated)",
-    description="Returns a paginated list of vendor summaries without sensitive banking numbers.",
+    description="Returns a paginated list of vendor summaries with deterministic ordering. Excludes all banking data.",
 )
 def list_vendors(
     page: int = Query(1, ge=1, description="Page number starting at 1"),
@@ -75,4 +87,10 @@ def get_vendor(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Vendor with ID '{vendor_id}' not found",
         )
-    return VendorResponse.from_orm_model(vendor)
+    try:
+        return VendorResponse.from_orm_model(vendor)
+    except EncryptionError:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Security error: Failed to safely decrypt vendor sensitive banking data.",
+        )

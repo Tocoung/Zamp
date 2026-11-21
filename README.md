@@ -1,8 +1,8 @@
 # Zamp — AI-Powered Vendor Onboarding Automation
 
 > **Case Study:** Zamp AI Solutions Analyst Case Study  
-> **Phase:** 1 (Step 2 — Vendor Data Model & Submission Interface)  
-> **Status:** Vendor Intake & Directory Implemented & Verified
+> **Phase:** 1 (Step 2.1 — Vendor Data Security & Reliability Hardening)  
+> **Status:** Hardened, Encrypted at Rest & Fully Verified
 
 An automated platform designed to streamline vendor company onboarding, compliance document extraction, multi-source verification, decisioning (Approved / Pending / Rejected), and human-in-the-loop review.
 
@@ -13,39 +13,41 @@ An automated platform designed to streamline vendor company onboarding, complian
 The project uses a clean **Modular Monolith** architecture with decoupled presentation and backend layers:
 
 - **Frontend:** React 18 + TypeScript + Vite + Tailwind CSS + Lucide React
-- **Backend:** Python 3.9+ + FastAPI + Pydantic v2 + Uvicorn
+- **Backend:** Python 3.9+ + FastAPI + Pydantic v2 + Uvicorn + Cryptography (Fernet)
 - **Persistence:** SQLAlchemy 2.0 (Active: SQLite with deterministic path resolution; Production interface: PostgreSQL via `DATABASE_URL` with driver)
-- **Testing:** Pytest + FastAPI TestClient (HTTPX) with temporary isolated SQLite databases
+- **Testing:** Pytest + FastAPI TestClient (HTTPX) with temporary isolated SQLite databases (35 automated tests)
 
 Detailed architectural boundaries and module roadmaps can be found in [docs/architecture.md](docs/architecture.md).
 
 ---
 
-## 2. Implemented Features (Step 2)
+## 2. Hardened Features & Security Architecture (Step 2.1)
 
-### A. Vendor Data Model & Persistence
-Structured SQLAlchemy ORM entity (`Vendor`) mapped to table `vendors`:
-- **Identity & Company Info:** UUID primary key, legal entity name, trade name / DBA (optional), business type, country of incorporation, company registration number.
-- **Contact Details:** Contact person full name, business email, contact phone number.
-- **Registered Address:** Address lines 1 & 2, city, state/province, postal code, country.
-- **Tax Details:** Tax identification type (EIN, VAT, GSTIN, PAN, CRN), tax identification number.
-- **Banking Information:** Account holder name, bank name, bank account number (secured/encrypted storage), routing number (ABA/SWIFT/IFSC), bank country.
-- **System Metadata:** Initial onboarding status `SUBMITTED`, UTC submission timestamp (`created_at`), and `updated_at`.
+### A. Authenticated Data Encryption at Rest
+- **Algorithm:** Authenticated symmetric encryption via Fernet (`cryptography` library), implementing AES-128-CBC with PKCS7 padding and HMAC-SHA256 authentication.
+- **Storage Format:** Stored under the versioned prefix `enc:v1:<fernet_token>` in `vendors.bank_account_number`.
+- **Key Management:** Read from the `VENDOR_DATA_ENCRYPTION_KEY` environment variable. Never hardcoded or committed to git.
+- **Fail-Safe Behavior:** The encryption utility raises `EncryptionConfigurationError` if the key is missing or invalid. It **never** silently falls back to plaintext storage.
+- **Corrupted Ciphertext Protection:** Corrupted or tampered ciphertext raises `DecryptionError` and is never silently treated as plaintext.
+- **Controlled Legacy Migration:** Includes an idempotent migration utility (`backend/app/db/migrate_encryption.py`) that detects unencrypted legacy records, encrypts them in place, and preserves data without downtime or data loss.
+- **MVP vs. Production Notice:** While Fernet authenticated encryption provides strong confidentiality and integrity for this local MVP/prototype, an enterprise production financial platform requires envelope encryption backed by a Hardware Security Module (HSM) or cloud KMS (AWS KMS, GCP Cloud KMS, HashiCorp Vault) with automated key rotation and PCI-DSS compliance.
 
-### B. Backend REST API
-Exposed under prefix `/api/v1/vendors`:
-1. `POST /api/v1/vendors`: Accepts vendor registration payload, performs strict Pydantic v2 structural validation and sanitization, generates UUID and `SUBMITTED` status, persists to database, and returns `201 Created` with masked banking information.
-2. `GET /api/v1/vendors`: Returns paginated summary records (`total`, `page`, `page_size`, `total_pages`). Omits sensitive banking details from listing responses.
-3. `GET /api/v1/vendors/{vendor_id}`: Returns complete record for a given UUID with bank account number masked (`••••••••1234`). Returns structured `404 Not Found` if the vendor does not exist.
+### B. Startup Reliability & Schema Safeguards
+- **Startup Guard:** If database connectivity or required schema initialization fails during `lifespan()`, application startup fails immediately with a `RuntimeError` rather than serving traffic in a degraded or uninitialized state.
+- **Non-Destructive Initialization:** Relies on `CREATE TABLE IF NOT EXISTS`, preserving all existing vendor records and database contents across restarts.
+- **Operational Probes:** Process liveness (`/healthz`) confirms runtime execution, while readiness (`/readyz`) continues monitoring downstream database health.
 
-### C. Data Security & Masking
-- Raw bank account numbers are stored in the database for financial settlement, but are **strictly masked** in all API responses (`••••••••9012`).
-- Raw account numbers are **never printed to logs, console output, or client-side listings**.
+### C. Transaction Rollback & Data Integrity
+- **Transactional Rollback:** In `VendorService.create_vendor()`, any database persistence or commit error triggers an immediate `db.rollback()`, ensuring database sessions are never left in a poisoned transaction state.
+- **Safe Server Errors:** Database exceptions are converted into clean 500 HTTP errors. Raw SQL queries, database credentials, and vendor banking data are never exposed in logs or API responses.
 
-### D. Frontend User Interface
-- **Registration Form:** 5-section intake form with client-side required field and email format validation, loading spinners, error alerts, and success banners displaying the newly generated Vendor UUID.
-- **Vendor Directory:** Paginated table listing submitted vendors with status badges (`SUBMITTED`), search filtering, and an "Inspect" modal displaying complete entity records.
-- **System Health:** Tabbed navigation preserving live backend operational probes and architecture roadmap.
+### D. Deterministic Pagination
+- **Composite Sort Key:** Vendor listing queries sort by `Vendor.created_at.desc(), Vendor.id.asc()`, guaranteeing strictly deterministic record ordering across pagination boundaries even when multiple submissions share identical timestamps.
+
+### E. Frontend Form Flow & Security Accuracy
+- **Duplicate Submission Lock:** Once a submission succeeds, the form locks the submit button (`Submitted (Edit to Re-submit)`) and shows a clear lock indicator banner until any field is edited or the form is reset.
+- **Directory Refresh:** Successfully submitting a vendor and clicking "View in Directory →" automatically triggers a fresh reload of the vendor directory.
+- **Accurate UI Security Messaging:** Corrected inspection modal security badges to clarify that while bank account numbers are authenticated-encrypted at rest and masked in UI views, routing numbers and tax IDs remain unencrypted as needed for tax lookup and clearing network routing.
 
 ---
 
@@ -130,17 +132,25 @@ Exposed under prefix `/api/v1/vendors`:
    pip install -r requirements.txt
    ```
 
-4. **Configure environment:**
+4. **Configure environment & encryption key:**
    ```bash
    cp .env.example .env
+   # Generate a local authenticated Fernet encryption key:
+   python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+   # Paste the generated key into your .env file as VENDOR_DATA_ENCRYPTION_KEY=<key>
    ```
 
-5. **Run backend automated tests (executes in isolated temporary database):**
+5. **Run legacy data migration (if upgrading existing unencrypted database):**
+   ```bash
+   PYTHONPATH=. python3 -m app.db.migrate_encryption
+   ```
+
+6. **Run backend automated tests (executes in isolated temporary database):**
    ```bash
    pytest
    ```
 
-6. **Start the FastAPI development server:**
+7. **Start the FastAPI development server:**
    ```bash
    uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
    ```
