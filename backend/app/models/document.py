@@ -63,6 +63,18 @@ class VendorDocument(Base):
 
     # Relationships
     vendor = relationship("Vendor", back_populates="documents")
+    classifications = relationship(
+        "DocumentClassification",
+        back_populates="document",
+        cascade="all, delete-orphan",
+        order_by="desc(DocumentClassification.created_at)",
+        lazy="selectin",
+    )
+
+    @property
+    def latest_classification(self):
+        """Returns the most recent classification record for this document, if any."""
+        return self.classifications[0] if self.classifications else None
 
     __table_args__ = (
         Index("ix_documents_vendor_category", "vendor_id", "document_category"),

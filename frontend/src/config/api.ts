@@ -522,6 +522,45 @@ export interface VendorDocumentResponse {
   document_version: number;
   created_at: string;
   updated_at: string;
+  latest_classification?: DocumentClassificationResponse | null;
+}
+
+export type ClassificationStatus =
+  | 'CLASSIFIED'
+  | 'LOW_CONFIDENCE'
+  | 'INSUFFICIENT_TEXT'
+  | 'FAILED';
+
+export interface ClassificationEvidence {
+  matched_headings?: string[];
+  matched_keywords?: string[];
+  signals_by_category?: Record<string, { heading_matches?: string[]; keyword_matches?: string[]; total_score?: number }>;
+  pages_inspected?: number;
+  chars_inspected?: number;
+  [key: string]: unknown;
+}
+
+export interface DocumentClassificationResponse {
+  id: string;
+  document_id: string;
+  vendor_id: string;
+  declared_category: DocumentCategory | string;
+  predicted_category: DocumentCategory | string;
+  status: ClassificationStatus;
+  confidence_score: number;
+  evidence: ClassificationEvidence;
+  limitation_code?: string | null;
+  limitation_reason?: string | null;
+  classifier_version: string;
+  classified_at: string;
+}
+
+export interface DocumentClassificationHistoryPagination {
+  items: DocumentClassificationResponse[];
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
 }
 
 export interface VendorDocumentPagination {
@@ -647,4 +686,93 @@ export async function deleteVendorDocument(
     throw new Error(errorMsg);
   }
 }
+
+export async function classifyVendorDocument(
+  vendorId: string,
+  documentId: string
+): Promise<DocumentClassificationResponse> {
+  const response = await fetch(
+    `${API_BASE_URL}/vendors/${vendorId}/documents/${documentId}/classify`,
+    {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+      },
+    }
+  );
+
+  if (!response.ok) {
+    let errorMsg = `Classification failed (HTTP ${response.status})`;
+    try {
+      const err = await response.json();
+      if (err.detail) {
+        errorMsg = typeof err.detail === 'string' ? err.detail : JSON.stringify(err.detail);
+      }
+    } catch {
+      // fallback
+    }
+    throw new Error(errorMsg);
+  }
+
+  return response.json();
+}
+
+export async function fetchDocumentClassification(
+  vendorId: string,
+  documentId: string
+): Promise<DocumentClassificationResponse> {
+  const response = await fetch(
+    `${API_BASE_URL}/vendors/${vendorId}/documents/${documentId}/classification`,
+    {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+      },
+    }
+  );
+
+  if (!response.ok) {
+    let errorMsg = `Failed to fetch classification (HTTP ${response.status})`;
+    try {
+      const err = await response.json();
+      if (err.detail) errorMsg = err.detail;
+    } catch {
+      // fallback
+    }
+    throw new Error(errorMsg);
+  }
+
+  return response.json();
+}
+
+export async function fetchDocumentClassificationHistory(
+  vendorId: string,
+  documentId: string,
+  page = 1,
+  pageSize = 20
+): Promise<DocumentClassificationHistoryPagination> {
+  const response = await fetch(
+    `${API_BASE_URL}/vendors/${vendorId}/documents/${documentId}/classification-history?page=${page}&page_size=${pageSize}`,
+    {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+      },
+    }
+  );
+
+  if (!response.ok) {
+    let errorMsg = `Failed to fetch classification history (HTTP ${response.status})`;
+    try {
+      const err = await response.json();
+      if (err.detail) errorMsg = err.detail;
+    } catch {
+      // fallback
+    }
+    throw new Error(errorMsg);
+  }
+
+  return response.json();
+}
+
 

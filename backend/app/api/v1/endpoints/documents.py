@@ -6,10 +6,19 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.schemas.document import VendorDocumentResponse, VendorDocumentPagination, DocumentCategory
+from app.schemas.classification import (
+    DocumentClassificationResponse,
+    DocumentClassificationHistoryPagination,
+)
 from app.services.document_service import (
     document_service,
     DocumentNotFoundError,
     DocumentServiceError,
+)
+from app.services.classification_service import (
+    classification_service,
+    ClassificationServiceError,
+    ClassificationNotFoundError,
 )
 from app.core.document_validator import DocumentValidationError, DocumentSizeExceededError, read_upload_file_bounded
 from app.core.config import settings
@@ -207,6 +216,116 @@ def delete_document(
             detail=f"Document '{document_id}' not found for vendor '{vendor_id}'.",
         )
     except DocumentServiceError as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e),
+        )
+
+
+@router.post(
+    "/{document_id}/classify",
+    response_model=DocumentClassificationResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Classify Supporting Document",
+    description="Deterministically analyzes extracted content of a document to predict category and generate explainable evidence.",
+)
+def classify_document(
+    vendor_id: str,
+    document_id: str,
+    db: Session = Depends(get_db),
+) -> DocumentClassificationResponse:
+    """Run deterministic content classification on an uploaded document."""
+    try:
+        classification = classification_service.classify_document(
+            db=db, vendor_id=vendor_id, document_id=document_id
+        )
+        return DocumentClassificationResponse.model_validate(classification)
+    except VendorNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Vendor '{vendor_id}' not found.",
+        )
+    except DocumentNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Document '{document_id}' not found for vendor '{vendor_id}'.",
+        )
+    except ClassificationServiceError as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e),
+        )
+
+
+@router.get(
+    "/{document_id}/classification",
+    response_model=DocumentClassificationResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Get Latest Document Classification",
+    description="Retrieves the most recent classification result and explainability signals for a document.",
+)
+def get_document_classification(
+    vendor_id: str,
+    document_id: str,
+    db: Session = Depends(get_db),
+) -> DocumentClassificationResponse:
+    """Retrieve the latest classification for a document."""
+    try:
+        classification = classification_service.get_latest_classification(
+            db=db, vendor_id=vendor_id, document_id=document_id
+        )
+        if not classification:
+            raise ClassificationNotFoundError(f"No classification found for document '{document_id}'.")
+        return DocumentClassificationResponse.model_validate(classification)
+    except DocumentNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Document '{document_id}' not found for vendor '{vendor_id}'.",
+        )
+    except ClassificationNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No classification found for document '{document_id}'.",
+        )
+    except ClassificationServiceError as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e),
+        )
+
+
+@router.get(
+    "/{document_id}/classification-history",
+    response_model=DocumentClassificationHistoryPagination,
+    status_code=status.HTTP_200_OK,
+    summary="Get Document Classification History",
+    description="Retrieves chronological history of all classification runs for a document.",
+)
+def get_document_classification_history(
+    vendor_id: str,
+    document_id: str,
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(20, ge=1, le=100, description="Items per page"),
+    db: Session = Depends(get_db),
+) -> DocumentClassificationHistoryPagination:
+    """Retrieve paginated classification history for a document."""
+    try:
+        items, total, total_pages = classification_service.get_classification_history(
+            db=db, vendor_id=vendor_id, document_id=document_id, page=page, page_size=page_size
+        )
+        return DocumentClassificationHistoryPagination(
+            items=[DocumentClassificationResponse.model_validate(c) for c in items],
+            total=total,
+            page=page,
+            page_size=page_size,
+            total_pages=total_pages,
+        )
+    except DocumentNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Document '{document_id}' not found for vendor '{vendor_id}'.",
+        )
+    except ClassificationServiceError as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(e),

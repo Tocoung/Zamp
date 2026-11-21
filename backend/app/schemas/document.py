@@ -4,6 +4,7 @@ from datetime import datetime
 from enum import Enum
 from typing import List, Optional
 from pydantic import BaseModel, ConfigDict, Field
+from app.schemas.classification import DocumentClassificationResponse
 
 
 class DocumentCategory(str, Enum):
@@ -37,6 +38,7 @@ class VendorDocumentResponse(BaseModel):
     sha256_checksum: str = Field(..., examples=["e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"])
     upload_status: str = Field(..., examples=["UPLOADED"])
     document_version: int = Field(..., examples=[1])
+    latest_classification: Optional[DocumentClassificationResponse] = None
     created_at: datetime
     updated_at: datetime
 

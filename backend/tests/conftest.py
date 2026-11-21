@@ -21,6 +21,7 @@ from app.models.vendor import Vendor  # noqa: F401 - ensures vendor model is reg
 from app.models.document import VendorDocument  # noqa: F401 - ensures document model is registered
 from app.models.decision import VendorDecision  # noqa: F401 - ensures decision model is registered
 from app.models.activity import VendorActivity  # noqa: F401 - ensures activity model is registered
+from app.models.classification import DocumentClassification  # noqa: F401 - ensures classification model is registered
 from app.db.session import get_db, check_db_connection
 
 # Ensure deterministic encryption key for test session

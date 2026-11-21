@@ -1,8 +1,8 @@
 # Zamp — AI-Powered Vendor Onboarding Automation
 
 > **Case Study:** Zamp AI Solutions Analyst Case Study  
-> **Phase:** 2 (Step 1.1 — Document Storage Resource & Lifecycle Hardening)  
-> **Status:** Fully Integrated, Hardened, Tested, and Verified (145 Automated Tests Passing)  
+> **Phase:** 2 (Step 2 — Document Classification Engine & Explainability)  
+> **Status:** Fully Integrated, Hardened, Tested, and Verified (162 Automated Tests Passing)  
 
 An automated platform designed to streamline vendor company onboarding, compliance document intake & secure storage, multi-source verification, deterministic validation, explainable decisioning (`APPROVED` / `PENDING` / `REJECTED`), lifecycle activity tracking, and human-in-the-loop review.
 
@@ -439,22 +439,61 @@ Every document upload and deletion records an event in `VendorActivity`:
 
 ---
 
-## 9. Health & Readiness Probes
+## 9. Document Classification Engine & Explainability (Phase 2, Step 2)
+
+The document classification engine resides in `backend/app/classification/` and service layer `backend/app/services/classification_service.py`. It is a pure, deterministic, rule-based content classifier that analyzes extracted text from digitally readable PDFs.
+
+### A. Architectural Separation & Safety Boundaries
+- **Strict Separation of Concerns:** Classification operates independently of the vendor validation and decision engines. Running classification produces an explainable document prediction, but **NEVER alters vendor onboarding status** (`APPROVED`/`PENDING`/`REJECTED`).
+- **Preservation of Declared Category:** The category selected by the user/vendor at upload time is preserved as `declared_category`. The classifier predicts `predicted_category` without overwriting the user's input.
+- **Safe Internal Digital Text Extraction:** Uses `pypdf` bounded to the first 25 pages and 50,000 characters. No OCR is attempted for scanned images or textless PDFs: image-only uploads (PNG, JPEG) explicitly return `status="INSUFFICIENT_TEXT"` with `limitation_code="IMAGE_ONLY_DOCUMENT"`, and textless PDFs return `limitation_code="NO_EXTRACTABLE_TEXT"`.
+- **Zero Sensitive Data Leakage:** Classification evidence records only matched dictionary heading strings and context keyword counts (`matched_headings`, `matched_keywords`, `signals_by_category`). Raw extracted document text and sensitive financial numbers are never stored in the database or exposed via API.
+
+### B. Supported Document Categories
+1. **`CERTIFICATE_OF_INCORPORATION`:** Ministry of Corporate Affairs, Certificate of Incorporation, Registrar of Companies, Companies Act, Articles of Association, CIN.
+2. **`TAX_CERTIFICATE`:** Form GST REG-06, Registration Certificate, Goods and Services Tax, GSTIN, W-9, Department of the Treasury, Internal Revenue Service, VAT Registration.
+3. **`BANK_PROOF`:** Account Statement, Bank Statement, Cancelled Cheque, Voided Cheque, IFSC Code, Account Holder Name, Routing Transit Number.
+4. **`ADDRESS_PROOF`:** Electricity Bill, Utility Bill, Municipal Corporation, Consumer Invoice, Premises Address, Proof of Address.
+5. **`OTHER`:** Valid supporting documents not fitting standard statutory templates.
+6. **`UNKNOWN`:** Submissions with ambiguous or unextractable content.
+
+### C. Deterministic Scoring & Decision Thresholds
+- **Heading Matches:** High-weight signals contribute up to 0.70 toward category score.
+- **Contextual Keywords:** Supporting terminology contributes up to 0.40.
+- **Filename Signals:** Weak secondary hints contribute up to 0.08 (filename alone can never elevate an empty or textless document).
+- **Classification Status Logic:**
+  - Score $\ge 0.70$ and clear winner $\rightarrow$ `CLASSIFIED`
+  - Score between $0.40$ and $0.70$ $\rightarrow$ `LOW_CONFIDENCE`
+  - Score $< 0.40$ or ambiguous $\rightarrow$ `LOW_CONFIDENCE` (`predicted_category="UNKNOWN"`)
+  - Conflicting top signals (margin $< 0.15$ with both $\ge 0.35$) $\rightarrow$ `LOW_CONFIDENCE` (`limitation_code="CONFLICTING_SIGNALS"`)
+  - Non-extractable text $\rightarrow$ `INSUFFICIENT_TEXT` (confidence `0.0`, `limitation_code="NO_EXTRACTABLE_TEXT"` or `"IMAGE_ONLY_DOCUMENT"`)
+
+### D. Audit Persistence & REST API Endpoints
+Classifications are stored transactionally in `document_classifications` table and tracked in `vendor_activities` with `DOCUMENT_CLASSIFIED` event:
+- `POST /api/v1/vendors/{vendor_id}/documents/{document_id}/classify`: Triggers deterministic content classification and records explainable result.
+- `GET /api/v1/vendors/{vendor_id}/documents/{document_id}/classification`: Returns the latest classification result and explainability signals.
+- `GET /api/v1/vendors/{vendor_id}/documents/{document_id}/classification-history`: Returns paginated history of all classification runs.
+- `GET /api/v1/vendors/{vendor_id}/documents`: Returns document metadata with embedded `latest_classification` object.
+
+---
+
+## 10. Health & Readiness Probes
 
 - **`GET /healthz` (Liveness):** Process check (`200 OK`, `{"status": "alive"}`).
 - **`GET /readyz` (Readiness):** Dependency probe (`200 OK` with database connected; `503 Service Unavailable` if degraded).
 
 ---
 
-## 10. Verification & Test Execution
+## 11. Verification & Test Execution
 
 ### Backend Automated Test Suite
 ```bash
 PYTHONPATH=backend backend/.venv/bin/pytest backend/tests/ -v
 ```
-**Result:** **145 passed in 0.85s** (Exit code: `0`).
+**Result:** **162 passed in 1.91s** (Exit code: `0`).
 
 Includes complete coverage across:
+- `test_classification.py`: 17 comprehensive classification tests (digital PDF text extraction, empty/scanned PDF handling, image file rejection without OCR, incorporation/tax/bank/address rule scoring, ambiguous and conflicting signals, filename-only bounds, classify/get/history endpoints, cross-vendor isolation, and proof that vendor compliance status is unmutated).
 - `test_documents.py`: 30 tests covering intake validation, bounded chunked streaming, 10MB exact boundary and 1-byte overflow checks, path traversal and symlink rejection, sanitized error messages, two-phase staged deletion failure handling, database rollback recovery, and idempotent missing file deletion.
 - `test_end_to_end_lifecycle.py`: 5 comprehensive lifecycle tests (Submission $\to$ Persistence $\to$ Validation $\to$ Decision $\to$ Status Update $\to$ History $\to$ Correction $\to$ Re-evaluation).
 - `test_decision_api.py`: 13 integration tests for decision routes, transactional integrity, and explainability.
@@ -466,18 +505,19 @@ Includes complete coverage across:
 - `test_vendors.py`: 10 tests for intake validation, persistence, and account masking.
 - `test_health.py` & `test_config.py`: 12 tests for operational health probes and environment config.
 
-### Frontend Production Build
+### Frontend Development & Build
 ```bash
-npm --prefix frontend run build
+npm --prefix frontend run dev
 ```
-**Result:** Compiled cleanly with TypeScript and Vite v5.4.21 (Exit code: `0`).
+**Result:** Fast HMR and live compilation with Vite v5.4.21.
 
 ---
 
-## 11. Scope Boundaries & Deferred Capabilities (Beyond Phase 2, Step 1)
+## 12. Scope Boundaries & Deferred Capabilities (Beyond Phase 2, Step 2)
 
-In strict adherence to Phase 2, Step 1 boundaries, the following advanced capabilities are deliberately deferred to subsequent steps:
-- **Optical Character Recognition (OCR):** Automated text extraction from scanned PDFs/images (Planned: Phase 2, Step 2).
-- **Document Classification & Cross-Document Verification:** Automated matching of extracted document fields against web intake form values (Planned: Phase 2, Step 3).
-- **Automated Document-Driven Decisioning:** Triggering status transitions based on document contents (Planned: Phase 2, Step 3).
+In strict adherence to Phase 2, Step 2 boundaries, the following advanced capabilities are deliberately deferred to subsequent steps:
+- **Optical Character Recognition (OCR):** Scanned image OCR models (e.g. Tesseract / Google Cloud Vision) for extracting text from flat image-only documents (Planned: Phase 2, Step 3).
+- **Structured Field Extraction:** Extracting key-value fields such as Tax IDs, bank account numbers, or incorporation dates from document text (Planned: Phase 2, Step 3).
+- **Cross-Document Verification:** Automated consistency cross-checks between document fields and vendor form fields (Planned: Phase 2, Step 3).
+- **Automated Document-Driven Compliance Decisioning:** Directly altering vendor approval status based on document contents (Planned: Phase 2, Step 3).
 - **Human-in-the-Loop Review Queues:** Dedicated exception triage and manual document approval workflows (Planned: Phase 3).

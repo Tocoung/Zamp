@@ -2,8 +2,8 @@
 ## Architecture Design Document — Vendor Onboarding Automation
 
 **Author:** Lead Software Engineer  
-**Version:** 2.1.1 (Phase 2 — Step 1.1: Document Storage Resource & Lifecycle Hardening)  
-**Status:** Approved & Implemented Foundation, Security Hardening, Deterministic Validation, Decision Engine, End-to-End Integration, Document Intake, & Storage Hardening  
+**Version:** 2.2.0 (Phase 2 — Step 2: Document Classification Engine & Explainability)  
+**Status:** Approved & Implemented Foundation, Security Hardening, Deterministic Validation, Decision Engine, End-to-End Integration, Document Intake, Storage Hardening, & Deterministic Document Classification  
 
 ---
 
@@ -488,7 +488,40 @@ Phase 2, Step 1.1 hardens the document intake and storage subsystem against reso
 
 ---
 
-## 12. Dependency Reproducibility Strategy
+## 12. Phase 2 — Step 2: Document Classification Engine & Explainability
+
+Phase 2, Step 2 introduces a dedicated, explainable document classification engine to identify the compliance category of uploaded vendor documents from their contents.
+
+### A. Architectural Separation of Classification
+- **Domain Independence:** The classification subsystem (`backend/app/classification/`) is strictly decoupled from the deterministic vendor validation engine (`backend/app/validation/`) and the vendor decision engine (`backend/app/decision/`).
+- **Explainable Predictions vs. Compliance Decisions:** The output of document classification is an explainable prediction with category confidence and safe evidence signals. It **never mutates or interacts with vendor-level onboarding status** (`APPROVED`, `PENDING`, `REJECTED`).
+- **Declared vs. Predicted Preservation:** Uploaded documents retain the user's declared category as `declared_category`. The classifier predicts `predicted_category` and records differences without overwriting user input.
+
+### B. Safe Internal Digital Text Extraction (`text_extractor.py`)
+- **Digital PDF Extraction Only:** Uses `pypdf` to extract embedded text from digitally readable PDFs within strict bounds (up to the first 25 pages, capped at 50,000 characters).
+- **Explicit Scanned Image Rejection (Zero OCR Hallucination):** In strict adherence to Step 2 boundaries, flat image uploads (PNG, JPEG) and textless PDFs do not run OCR. They immediately return `status="INSUFFICIENT_TEXT"` with explicit limitation codes (`IMAGE_ONLY_DOCUMENT` or `NO_EXTRACTABLE_TEXT`) and 0.0 confidence score.
+- **Data Privacy Assurance:** Raw extracted document text and sensitive account/tax numbers are never persisted in the database or exposed in responses.
+
+### C. Deterministic Scoring Model & Disambiguation (`rules.py`, `engine.py`)
+- **Weighted Evidence Formulation:**
+  - `CATEGORY_STRONG_HEADINGS`: Direct statutory headings contribute up to 0.70 toward category score.
+  - `CATEGORY_CONTEXT_KEYWORDS`: Jurisdictional and compliance terms contribute up to 0.40.
+  - `CATEGORY_FILENAME_SIGNALS`: Filename hints provide secondary evidence capped at 0.08. Filename matches alone can never classify a document without supporting text.
+- **Confidence Tiers & Limitation Codes:**
+  - $\ge 0.70$: `CLASSIFIED`
+  - $0.40 - 0.70$: `LOW_CONFIDENCE`
+  - $< 0.40$ or ambiguous: `LOW_CONFIDENCE` (`predicted_category="UNKNOWN"`)
+  - Top two category scores within 0.15 margin when both $\ge 0.35$: `LOW_CONFIDENCE` (`limitation_code="CONFLICTING_SIGNALS"`)
+  - Non-extractable text: `INSUFFICIENT_TEXT` (`limitation_code="NO_EXTRACTABLE_TEXT"` or `"IMAGE_ONLY_DOCUMENT"`)
+
+### D. Audit Logging & REST API Contracts (`services/classification_service.py`)
+- **`document_classifications` Table:** Stores each classification execution with foreign keys to `vendor_documents` and `vendors`, status, confidence, classifier version (`1.0.0`), and sanitized dictionary evidence.
+- **Versioned History:** Running classification multiple times appends new rows to history while `VendorDocument.latest_classification` dynamically surfaces the most recent result.
+- **Activity Timeline Integration:** Successful classification appends a `DOCUMENT_CLASSIFIED` event to `VendorActivity` timeline without changing vendor status.
+
+---
+
+## 13. Dependency Reproducibility Strategy
 
 For a one-week case study project, dependency management balances determinism with zero unnecessary tool overhead:
 - **Backend:** Pin explicit, exact versions in `backend/requirements.txt` (`==` pinning). Standard installation via `python3 -m venv .venv && pip install -r requirements.txt`. Includes `cryptography==50.0.2` for authenticated encryption at rest.
