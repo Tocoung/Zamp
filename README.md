@@ -1,8 +1,8 @@
 # Zamp — AI-Powered Vendor Onboarding Automation
 
 > **Case Study:** Zamp AI Solutions Analyst Case Study  
-> **Phase:** 1 (Step 1.1 — Foundation Hardening & Architecture Alignment)  
-> **Status:** Hardened & Verified Foundation
+> **Phase:** 1 (Step 2 — Vendor Data Model & Submission Interface)  
+> **Status:** Vendor Intake & Directory Implemented & Verified
 
 An automated platform designed to streamline vendor company onboarding, compliance document extraction, multi-source verification, decisioning (Approved / Pending / Rejected), and human-in-the-loop review.
 
@@ -18,6 +18,34 @@ The project uses a clean **Modular Monolith** architecture with decoupled presen
 - **Testing:** Pytest + FastAPI TestClient (HTTPX) with temporary isolated SQLite databases
 
 Detailed architectural boundaries and module roadmaps can be found in [docs/architecture.md](docs/architecture.md).
+
+---
+
+## 2. Implemented Features (Step 2)
+
+### A. Vendor Data Model & Persistence
+Structured SQLAlchemy ORM entity (`Vendor`) mapped to table `vendors`:
+- **Identity & Company Info:** UUID primary key, legal entity name, trade name / DBA (optional), business type, country of incorporation, company registration number.
+- **Contact Details:** Contact person full name, business email, contact phone number.
+- **Registered Address:** Address lines 1 & 2, city, state/province, postal code, country.
+- **Tax Details:** Tax identification type (EIN, VAT, GSTIN, PAN, CRN), tax identification number.
+- **Banking Information:** Account holder name, bank name, bank account number (secured/encrypted storage), routing number (ABA/SWIFT/IFSC), bank country.
+- **System Metadata:** Initial onboarding status `SUBMITTED`, UTC submission timestamp (`created_at`), and `updated_at`.
+
+### B. Backend REST API
+Exposed under prefix `/api/v1/vendors`:
+1. `POST /api/v1/vendors`: Accepts vendor registration payload, performs strict Pydantic v2 structural validation and sanitization, generates UUID and `SUBMITTED` status, persists to database, and returns `201 Created` with masked banking information.
+2. `GET /api/v1/vendors`: Returns paginated summary records (`total`, `page`, `page_size`, `total_pages`). Omits sensitive banking details from listing responses.
+3. `GET /api/v1/vendors/{vendor_id}`: Returns complete record for a given UUID with bank account number masked (`••••••••1234`). Returns structured `404 Not Found` if the vendor does not exist.
+
+### C. Data Security & Masking
+- Raw bank account numbers are stored in the database for financial settlement, but are **strictly masked** in all API responses (`••••••••9012`).
+- Raw account numbers are **never printed to logs, console output, or client-side listings**.
+
+### D. Frontend User Interface
+- **Registration Form:** 5-section intake form with client-side required field and email format validation, loading spinners, error alerts, and success banners displaying the newly generated Vendor UUID.
+- **Vendor Directory:** Paginated table listing submitted vendors with status badges (`SUBMITTED`), search filtering, and an "Inspect" modal displaying complete entity records.
+- **System Health:** Tabbed navigation preserving live backend operational probes and architecture roadmap.
 
 ---
 
@@ -198,9 +226,9 @@ The service exposes two standard operational probes alongside a rich diagnostic 
 
 1. **Phase 1: Foundation & Core Onboarding Engine**
    - Step 1: Project Foundation & Architecture *(Completed)*
-   - Step 1.1: Foundation Hardening & Architecture Alignment *(Current)*
-   - Step 2: Vendor Data Model & Submission API *(Planned)*
-   - Step 3: Deterministic Validation *(Planned)*
+   - Step 1.1: Foundation Hardening & Architecture Alignment *(Completed)*
+   - Step 2: Vendor Data Model & Submission API *(Completed)*
+   - Step 3: Deterministic Validation *(Next)*
    - Step 4: Decision Engine *(Planned)*
    - Step 5: End-to-End Integration *(Planned)*
 2. **Phase 2: Intelligent Document Processing & Cross-Document Verification**

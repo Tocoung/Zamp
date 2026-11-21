@@ -149,8 +149,8 @@ The project follows a strict, incremental implementation sequence. Boundaries ar
 ```mermaid
 flowchart TD
     subgraph P1["Phase 1: Foundation & Core Onboarding Engine"]
-        F1["Step 1: Foundation & Probes (IMPLEMENTED)"] --> F2["Step 2: Vendor Data Model & Submission (PLANNED)"]
-        F2 --> F3["Step 3: Deterministic Validation (PLANNED)"]
+        F1["Step 1: Foundation & Probes (IMPLEMENTED)"] --> F2["Step 2: Vendor Data Model & Submission (IMPLEMENTED)"]
+        F2 --> F3["Step 3: Deterministic Validation (NEXT)"]
         F3 --> F4["Step 4: Decision Engine (PLANNED)"]
         F4 --> F5["Step 5: End-to-End Integration (PLANNED)"]
     end
@@ -188,7 +188,7 @@ flowchart TD
 | **Application Runtime & Probes** | Phase 1 (Step 1) | **Implemented** | `backend/app/main.py` (`/healthz`, `/readyz`) |
 | **Deterministic DB Engine & Base** | Phase 1 (Step 1) | **Implemented** | `backend/app/db/base.py`, `backend/app/db/session.py` |
 | **Frontend Application Shell** | Phase 1 (Step 1) | **Implemented** | `frontend/src/App.tsx`, `frontend/src/components/` |
-| **Vendor Submission & Profile** | Phase 1 (Step 2) | *Planned* | `backend/app/services/vendor_service.py` |
+| **Vendor Submission & Profile** | Phase 1 (Step 2) | **Implemented** | `backend/app/models/vendor.py`, `backend/app/services/vendor_service.py`, `backend/app/api/v1/endpoints/vendors.py` |
 | **Deterministic Validation Engine** | Phase 1 (Step 3) | *Planned* | `backend/app/services/validation_service.py` |
 | **Decision Engine (Approved/Pending/Rejected)** | Phase 1 (Step 4) | *Planned* | `backend/app/services/decision_service.py` |
 | **End-to-End Core Integration** | Phase 1 (Step 5) | *Planned* | `backend/app/api/v1/endpoints/vendors.py` |

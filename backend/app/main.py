@@ -36,6 +36,15 @@ async def lifespan(app: FastAPI):
     db_ok = check_db_connection()
     if db_ok:
         logger.info("Database connection successfully established.")
+        # Ensure database tables exist (safe initialization: CREATE TABLE IF NOT EXISTS)
+        try:
+            from app.db.base import Base
+            from app.db.session import engine
+            import app.models  # noqa: F401 - registers models
+            Base.metadata.create_all(bind=engine)
+            logger.info("Database schema verified and initialized.")
+        except Exception as e:
+            logger.error(f"Error during schema initialization: {e}")
     else:
         logger.warning("Database connection failed during startup. Operating in degraded mode.")
 

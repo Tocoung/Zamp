@@ -22,11 +22,11 @@ export const Header: React.FC = () => {
         <div className="flex items-center space-x-3">
           <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-sky-50 text-sky-700 border border-sky-200">
             <Layers className="w-3.5 h-3.5 mr-1" />
-            Phase 1: Step 1 (Foundation)
+            Phase 1: Step 2 (Vendor Intake & Directory)
           </span>
           <span className="hidden sm:inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-50 text-emerald-700 border border-emerald-200">
             <ShieldCheck className="w-3.5 h-3.5 mr-1" />
-            Architecture Ready
+            Database Active
           </span>
         </div>
       </div>

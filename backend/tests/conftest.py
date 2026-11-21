@@ -14,9 +14,10 @@ backend_path = Path(__file__).resolve().parent.parent
 if str(backend_path) not in sys.path:
     sys.path.insert(0, str(backend_path))
 
-from app.main import app
+from app.main import app as fastapi_app
 from app.core.config import settings, PROJECT_ROOT
 from app.db.base import Base
+from app.models.vendor import Vendor  # noqa: F401 - ensures vendor model is registered
 from app.db.session import get_db, check_db_connection
 
 
@@ -67,12 +68,12 @@ def client(test_engine, test_session_factory):
         finally:
             session.close()
 
-    app.dependency_overrides[get_db] = _override_get_db
+    fastapi_app.dependency_overrides[get_db] = _override_get_db
     
-    with TestClient(app) as test_client:
+    with TestClient(fastapi_app) as test_client:
         yield test_client
         
-    app.dependency_overrides.clear()
+    fastapi_app.dependency_overrides.clear()
 
 
 @pytest.fixture(scope="session")
