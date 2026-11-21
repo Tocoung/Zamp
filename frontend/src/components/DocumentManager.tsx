@@ -453,9 +453,18 @@ export const DocumentManager: React.FC<DocumentManagerProps> = ({
                             <div className="flex items-center gap-1.5 flex-wrap">
                               {getCategoryBadge(cls.predicted_category)}
                               {getClassificationStatusBadge(cls.status)}
-                              <span className="font-mono text-[10px] font-semibold text-slate-500">
-                                {Math.round(cls.confidence_score * 100)}%
-                              </span>
+                              <div className="inline-flex items-center gap-1 text-[10px] text-slate-500">
+                                <span>Rule-based match score:</span>
+                                <span className="font-mono font-bold text-slate-700 bg-slate-100 px-1 py-0.2 rounded border border-slate-200">
+                                  {cls.confidence_score.toFixed(2)}
+                                </span>
+                                <div className="relative group inline-flex items-center">
+                                  <Info className="w-2.5 h-2.5 text-slate-400 hover:text-slate-600 cursor-help" />
+                                  <div className="hidden group-hover:block absolute z-30 left-1/2 -translate-x-1/2 bottom-full mb-1 w-64 p-2 bg-slate-900 text-white text-[10px] rounded shadow-lg pointer-events-none text-left">
+                                    Rule-based heuristic match score [0.00–1.00] measuring matched signals. Not a statistical probability or proof of document authenticity.
+                                  </div>
+                                </div>
+                              </div>
                             </div>
 
                             {/* Declared vs Predicted Notice if mismatch */}
@@ -559,6 +568,17 @@ export const DocumentManager: React.FC<DocumentManagerProps> = ({
                               </span>
                             </div>
 
+                            {/* Score Explanation Banner */}
+                            <div className="p-2 rounded bg-sky-50/70 border border-sky-100 text-sky-900 text-[11px] flex items-start gap-1.5">
+                              <Info className="w-3.5 h-3.5 text-sky-600 shrink-0 mt-0.5" />
+                              <div>
+                                <span className="font-semibold">Rule-Based Match Score: {cls.confidence_score.toFixed(2)} / 1.00</span>
+                                <p className="text-[10px] text-sky-700 mt-0.5">
+                                  Heuristic match score reflecting keyword and heading signal weights matched in digital text. This is not a statistical probability, nor does it guarantee or imply document authenticity or legal validity.
+                                </p>
+                              </div>
+                            </div>
+
                             {/* Limitation Notice if any */}
                             {cls.limitation_code && (
                               <div className="p-2 rounded bg-amber-50 border border-amber-200 text-amber-800 text-[11px] space-y-0.5">
@@ -614,10 +634,10 @@ export const DocumentManager: React.FC<DocumentManagerProps> = ({
                             {/* Inspection Scope & Data Protection Note */}
                             <div className="text-[10px] text-slate-400 pt-1 flex items-center justify-between border-t border-slate-200/50">
                               <span>
-                                Scope: {cls.evidence?.pages_inspected ?? 0} page(s) • {cls.evidence?.chars_inspected ?? 0} chars inspected
+                                Scope: {typeof cls.evidence?.text_length_chars === 'number' ? `${cls.evidence.text_length_chars} chars` : `${cls.evidence?.chars_inspected ?? 0} chars`} inspected
                               </span>
                               <span className="italic">
-                                Deterministic dictionary signals only. No raw document text or sensitive numbers exposed.
+                                Deterministic dictionary signals only. No raw document text or sensitive identifiers exposed.
                               </span>
                             </div>
                           </div>

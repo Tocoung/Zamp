@@ -13,6 +13,7 @@ from app.schemas.document import DocumentCategory, DocumentStatus
 from app.core.storage import document_storage, StorageError, StorageFileNotFoundError, StorageDecryptionError
 from app.core.document_validator import validate_document_upload, DocumentValidationError
 from app.services.vendor_service import VendorNotFoundError
+from app.classification.privacy import mask_sensitive_identifiers
 from app.core.logging import logger
 
 
@@ -113,12 +114,13 @@ class DocumentService:
         )
 
         # 8. Record lightweight lifecycle activity
+        safe_display_name = mask_sensitive_identifiers(sanitized_filename)
         activity = VendorActivity(
             vendor_id=vendor.id,
             event_type="DOCUMENT_UPLOADED",
             title="Supporting Document Uploaded",
             description=(
-                f"Document uploaded: '{sanitized_filename}' "
+                f"Document uploaded: '{safe_display_name}' "
                 f"[{normalized_category}, {format_file_size(file_size_bytes)}]."
             ),
             status=vendor.status,
@@ -135,7 +137,7 @@ class DocumentService:
                 doc.id,
                 vendor.id,
                 doc.document_category,
-                doc.sanitized_filename,
+                safe_display_name,
             )
             return doc
         except Exception as e:
@@ -266,11 +268,12 @@ class DocumentService:
             ) from e
 
         # Step 2: Atomic database deletion and activity event creation
+        safe_display_name = mask_sensitive_identifiers(filename)
         activity = VendorActivity(
             vendor_id=str(vendor_id),
             event_type="DOCUMENT_DELETED",
             title="Supporting Document Deleted",
-            description=f"Document deleted: '{filename}' [{category}].",
+            description=f"Document deleted: '{safe_display_name}' [{category}].",
             status=vendor_status,
         )
 

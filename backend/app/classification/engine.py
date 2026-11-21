@@ -14,6 +14,7 @@ from app.classification.rules import (
     CATEGORY_CONTEXT_KEYWORDS,
     CATEGORY_FILENAME_SIGNALS,
 )
+from app.classification.privacy import sanitize_evidence_dict
 
 
 CLASSIFIER_VERSION = "1.0.0"
@@ -21,7 +22,18 @@ CLASSIFIER_VERSION = "1.0.0"
 
 @dataclass
 class ClassificationResult:
-    """Internal structured result produced by the ClassificationEngine."""
+    """Internal structured result produced by the ClassificationEngine.
+    
+    Attributes:
+        predicted_category: Category name or 'UNKNOWN'.
+        status: Operational classification status enum.
+        confidence_score: Rule-based heuristic match score [0.0 - 1.0].
+            Reflects keyword and heading match strength; not a statistical probability
+            or guarantee of authenticity.
+        evidence: Sanitized dictionary of explainability signals.
+        limitation_code: Explanation code if unclassified or ambiguous.
+        classifier_version: Engine implementation version string.
+    """
     predicted_category: str
     status: ClassificationStatus
     confidence_score: float
@@ -31,7 +43,12 @@ class ClassificationResult:
 
 
 class ClassificationEngine:
-    """Deterministic, explainable classification engine evaluating extracted text and signals."""
+    """Deterministic, explainable classification engine evaluating extracted text and signals.
+    
+    Evaluates rule-based heading patterns and contextual keywords against extractable digital text.
+    Filename signals are strictly auxiliary: filename alone can never produce a CLASSIFIED status
+    or determine category without verified content signals.
+    """
 
     def __init__(self, version: str = CLASSIFIER_VERSION):
         self.version = version
@@ -50,24 +67,28 @@ class ClassificationEngine:
             mime_type: Canonical MIME type.
             
         Returns:
-            ClassificationResult containing status, predicted category, confidence, and evidence.
+            ClassificationResult containing status, predicted category, heuristic match score,
+            and sanitized privacy-hardened evidence.
         """
         # 1. Extract digital text (bounded, safe)
         text, is_extractable, limitation = extract_document_text(content=content, mime_type=mime_type)
 
         # 2. Check for non-extractable text (images or scanned textless PDFs)
+        # Requirement: An unreadable or image-only document must remain INSUFFICIENT_TEXT
+        # regardless of filename.
         if not is_extractable:
+            empty_evidence = sanitize_evidence_dict({
+                "matched_headings": [],
+                "matched_keywords": [],
+                "signals_by_category": {cat: 0.0 for cat in CATEGORY_STRONG_HEADINGS},
+                "secondary_filename_signals": [],
+                "text_length_chars": 0,
+            })
             return ClassificationResult(
                 predicted_category="UNKNOWN",
                 status=ClassificationStatus.INSUFFICIENT_TEXT,
                 confidence_score=0.0,
-                evidence={
-                    "matched_headings": [],
-                    "matched_keywords": [],
-                    "signals_by_category": {},
-                    "secondary_filename_signals": [],
-                    "text_length_chars": 0,
-                },
+                evidence=empty_evidence,
                 limitation_code=limitation or ClassificationLimitationCode.NO_EXTRACTABLE_TEXT.value,
                 classifier_version=self.version,
             )
@@ -91,7 +112,16 @@ class ClassificationEngine:
             # Calculate deterministic weighted components
             heading_score = min(0.70, len(matched_headings) * 0.45)
             keyword_score = min(0.40, len(matched_keywords) * 0.12)
-            filename_score = min(0.08, len(matched_filenames) * 0.08)
+
+            # Requirement: Filename alone must never produce category signals or classification.
+            # If there are zero content signals (no headings and no context keywords),
+            # filename score is zeroed out.
+            if len(matched_headings) == 0 and len(matched_keywords) == 0:
+                filename_score = 0.0
+                matched_filenames = []
+            else:
+                # Auxiliary bonus when content already has matching signals
+                filename_score = min(0.08, len(matched_filenames) * 0.08)
 
             total_score = min(1.0, heading_score + keyword_score + filename_score)
             category_scores[category] = round(total_score, 2)
@@ -112,16 +142,28 @@ class ClassificationEngine:
             "secondary_filename_signals": [],
         })
 
-        base_evidence = {
+        base_evidence = sanitize_evidence_dict({
             "matched_headings": top_ev["matched_headings"],
             "matched_keywords": top_ev["matched_keywords"],
             "signals_by_category": category_scores,
             "secondary_filename_signals": top_ev["secondary_filename_signals"],
             "text_length_chars": len(text),
-        }
+        })
 
-        # 5. Evaluate thresholds and ambiguity
-        # Case A: Insufficient evidence (all scores below threshold)
+        # 5. Evaluate thresholds, ambiguity, and content-driven requirements
+        # Requirement: Filename alone must never produce CLASSIFIED status.
+        # If content has no headings and no keywords for the top category, remain UNKNOWN.
+        if len(top_ev["matched_headings"]) == 0 and len(top_ev["matched_keywords"]) == 0:
+            return ClassificationResult(
+                predicted_category="UNKNOWN",
+                status=ClassificationStatus.LOW_CONFIDENCE,
+                confidence_score=0.0,
+                evidence=base_evidence,
+                limitation_code=ClassificationLimitationCode.INSUFFICIENT_EVIDENCE.value,
+                classifier_version=self.version,
+            )
+
+        # Case A: Insufficient evidence (all scores below threshold 0.40)
         if top_score < 0.40:
             return ClassificationResult(
                 predicted_category="UNKNOWN",
@@ -143,8 +185,10 @@ class ClassificationEngine:
                 classifier_version=self.version,
             )
 
-        # Case C: Confident classification (high score and clear lead)
-        if top_score >= 0.70 and (top_score - runner_up_score) >= 0.18:
+        # Case C: Confident classification (high score >= 0.70 and clear lead >= 0.18)
+        # Must have verified content signals (at least one heading or strong keywords)
+        has_content_signals = len(top_ev["matched_headings"]) > 0 or len(top_ev["matched_keywords"]) >= 2
+        if top_score >= 0.70 and (top_score - runner_up_score) >= 0.18 and has_content_signals:
             return ClassificationResult(
                 predicted_category=top_category,
                 status=ClassificationStatus.CLASSIFIED,

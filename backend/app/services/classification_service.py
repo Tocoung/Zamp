@@ -13,6 +13,7 @@ from app.models.classification import DocumentClassification
 from app.services.vendor_service import VendorNotFoundError
 from app.services.document_service import document_service, DocumentNotFoundError, DocumentServiceError
 from app.classification.engine import classification_engine, ClassificationEngine
+from app.classification.privacy import sanitize_filename_for_activity
 from app.core.logging import logger
 
 
@@ -91,14 +92,14 @@ class ClassificationService:
         )
 
         # 4. Record lifecycle audit event (vendor compliance status is NEVER altered)
-        confidence_pct = int(round(result.confidence_score * 100))
+        safe_filename = sanitize_filename_for_activity(doc.sanitized_filename)
         activity = VendorActivity(
             vendor_id=vendor.id,
             event_type="DOCUMENT_CLASSIFIED",
             title="Supporting Document Classified",
             description=(
-                f"Document '{doc.sanitized_filename}' classified as {result.predicted_category} "
-                f"[{result.status.value}, {confidence_pct}% confidence]."
+                f"Document '{safe_filename}' classified as {result.predicted_category} "
+                f"[{result.status.value}, rule-based match score: {result.confidence_score:.2f}]."
             ),
             status=vendor.status,
         )
@@ -110,7 +111,7 @@ class ClassificationService:
             db.commit()
             db.refresh(classification)
             logger.info(
-                "Document classified successfully: class_id=%s, doc_id=%s, predicted=%s, status=%s, confidence=%.2f",
+                "Document classified successfully: class_id=%s, doc_id=%s, predicted=%s, status=%s, rule_based_score=%.2f",
                 classification.id,
                 doc.id,
                 classification.predicted_category,
@@ -120,7 +121,7 @@ class ClassificationService:
             return classification
         except Exception as e:
             db.rollback()
-            logger.error("Failed to persist document classification result: %s", e)
+            logger.error("Failed to persist document classification result: %s", type(e).__name__)
             raise ClassificationServiceError("Failed to persist classification record. Transaction rolled back.") from e
 
     def get_latest_classification(

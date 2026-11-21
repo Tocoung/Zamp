@@ -227,7 +227,11 @@ def delete_document(
     response_model=DocumentClassificationResponse,
     status_code=status.HTTP_200_OK,
     summary="Classify Supporting Document",
-    description="Deterministically analyzes extracted content of a document to predict category and generate explainable evidence.",
+    description=(
+        "Deterministically analyzes digital text layer to predict document category and produce explainable evidence. "
+        "Returns a rule-based heuristic match score [0.00 - 1.00] measuring matched signals, not a statistical probability "
+        "or authenticity verification."
+    ),
 )
 def classify_document(
     vendor_id: str,

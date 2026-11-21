@@ -451,3 +451,176 @@ def test_cross_vendor_isolation(client: TestClient, test_vendor: dict):
     # Try fetching classification via Vendor B's URL
     forbidden_get = client.get(f"/api/v1/vendors/{vendor_b_id}/documents/{doc_a_id}/classification")
     assert forbidden_get.status_code == 404
+
+
+# ============================================================================
+# 5. STEP 2.1 PRIVACY, FILENAME HANDLING, AND CONFIDENCE HARDENING TESTS
+# ============================================================================
+
+def test_sensitive_identifiers_never_leaked_in_evidence_or_activities_or_logs(
+    client: TestClient,
+    test_vendor: dict,
+    test_db_session: Session,
+    caplog: pytest.LogCaptureFixture,
+):
+    """Synthetic identifiers (bank acct, PAN, GSTIN, email, name) must never appear in
+
+    evidence, DB records, activity descriptions, or application logs.
+    """
+    import logging
+    vendor_id = test_vendor["id"]
+
+    secret_account = "9988776655443322"
+    secret_gstin = "27ABCDE1234F1Z5"
+    secret_pan = "ABCDE1234F"
+    secret_email = "confidential.cfo@secret-vendor-domain.org"
+    secret_person = "Cornelius Fudge"
+    sensitive_filename = f"bank_statement_{secret_account}_{secret_pan}.pdf"
+
+    pdf_text = (
+        f"HDFC BANK ACCOUNT STATEMENT FOR THE PERIOD "
+        f"Account Holder Name Apex Document AI Pvt Ltd "
+        f"Account Number {secret_account} PAN {secret_pan} GSTIN {secret_gstin} "
+        f"Contact {secret_email} Authorized Signatory {secret_person} "
+        f"IFSC Code HDFC0001234 Opening Balance Closing Balance Transaction Details"
+    )
+    pdf_bytes = make_pdf_with_text(pdf_text)
+
+    with caplog.at_level(logging.DEBUG):
+        # 1. Upload document with sensitive filename
+        upload_res = client.post(
+            f"/api/v1/vendors/{vendor_id}/documents",
+            files={"file": (sensitive_filename, pdf_bytes, "application/pdf")},
+            data={"document_category": "BANK_PROOF"},
+        )
+        assert upload_res.status_code == 201
+        doc_id = upload_res.json()["id"]
+
+        # 2. Trigger classification
+        classify_res = client.post(f"/api/v1/vendors/{vendor_id}/documents/{doc_id}/classify")
+        assert classify_res.status_code == 200
+        cls_json = classify_res.json()
+
+    # 3. Verify response evidence contains NONE of the sensitive identifiers
+    import json
+    evidence_str = json.dumps(cls_json.get("evidence", {}))
+    for secret in (secret_account, secret_gstin, secret_pan, secret_email, secret_person):
+        assert secret not in evidence_str, f"Sensitive identifier '{secret}' leaked into response evidence!"
+
+    # 4. Verify persisted DB classification record contains NONE of the sensitive identifiers
+    db_record = test_db_session.get(DocumentClassification, cls_json["id"])
+    assert db_record is not None
+    db_evidence_str = json.dumps(db_record.evidence or {})
+    for secret in (secret_account, secret_gstin, secret_pan, secret_email, secret_person):
+        assert secret not in db_evidence_str, f"Sensitive identifier '{secret}' leaked into DB evidence!"
+
+    # 5. Verify vendor activity descriptions contain NONE of the sensitive identifiers
+    activities = test_db_session.query(VendorActivity).filter(VendorActivity.vendor_id == vendor_id).all()
+    for act in activities:
+        for secret in (secret_account, secret_gstin, secret_pan, secret_email, secret_person):
+            assert secret not in (act.description or ""), f"Sensitive identifier '{secret}' leaked into activity: {act.description}"
+
+    # 6. Verify application logs contain NONE of the sensitive identifiers or raw extracted text
+    app_log_messages = " ".join([rec.getMessage() for rec in caplog.records if rec.name == "zamp_app"])
+    for secret in (secret_account, secret_gstin, secret_pan, secret_email, secret_person):
+        assert secret not in app_log_messages, f"Sensitive identifier '{secret}' leaked into application logs!"
+
+
+def test_filename_signal_cannot_produce_classified_status_alone():
+    """A document with generic text but an explicit filename must NEVER produce CLASSIFIED status."""
+    generic_text = (
+        "Internal project memo regarding weekly engineering sync. "
+        "The team discussed milestone dates and backlog grooming items. "
+        "No formal entity registrations or tax items exist here."
+    )
+    result = classification_engine.classify(
+        content=make_pdf_with_text(generic_text),
+        filename="certificate_of_incorporation_master.pdf",
+        mime_type="application/pdf",
+    )
+    assert result.status == ClassificationStatus.LOW_CONFIDENCE
+    assert result.predicted_category == "UNKNOWN"
+    assert result.confidence_score == 0.0
+
+
+def test_image_document_remains_insufficient_text_regardless_of_filename():
+    """An image-only document must remain INSUFFICIENT_TEXT with score 0.0 regardless of filename."""
+    result = classification_engine.classify(
+        content=VALID_PNG_BYTES,
+        filename="bank_account_statement_proof.png",
+        mime_type="image/png",
+    )
+    assert result.status == ClassificationStatus.INSUFFICIENT_TEXT
+    assert result.predicted_category == "UNKNOWN"
+    assert result.confidence_score == 0.0
+    assert result.limitation_code == ClassificationLimitationCode.IMAGE_ONLY_DOCUMENT.value
+
+
+def test_generic_filename_does_not_affect_strong_content_result():
+    """A generic filename (e.g., 'scan_001.pdf') does not penalize strong content signals."""
+    tax_text = (
+        "GOVERNMENT OF INDIA Form GST REG-06 Registration Certificate "
+        "Goods and Services Tax GSTIN 09AAACA1234A1Z5 Legal Name Taxpayer "
+        "Date of Liability Period of Validity Jurisdiction Central Tax"
+    )
+    result = classification_engine.classify(
+        content=make_pdf_with_text(tax_text),
+        filename="scan_001.pdf",
+        mime_type="application/pdf",
+    )
+    assert result.predicted_category == "TAX_CERTIFICATE"
+    assert result.status == ClassificationStatus.CLASSIFIED
+    assert result.confidence_score >= 0.70
+
+
+def test_filename_with_sensitive_numbers_not_copied_into_evidence():
+    """Filename containing sensitive tax/account numbers does not copy numbers into evidence."""
+    tax_text = (
+        "GOVERNMENT OF INDIA Form GST REG-06 Registration Certificate "
+        "Goods and Services Tax GSTIN 09AAACA1234A1Z5 Legal Name Taxpayer"
+    )
+    sensitive_filename = "gst_cert_09AAACA1234A1Z5_9988776655.pdf"
+    result = classification_engine.classify(
+        content=make_pdf_with_text(tax_text),
+        filename=sensitive_filename,
+        mime_type="application/pdf",
+    )
+    import json
+    ev_str = json.dumps(result.evidence)
+    assert "09AAACA1234A1Z5" not in ev_str
+    assert "9988776655" not in ev_str
+    # Secondary signals should only contain the clean token 'gst'
+    assert result.evidence.get("secondary_filename_signals") == ["gst"]
+
+
+def test_confidence_presentation_semantics(client: TestClient, test_vendor: dict):
+    """Confidence score is numeric float and activity log reflects rule-based match score phrasing."""
+    vendor_id = test_vendor["id"]
+    pdf_text = (
+        "ELECTRICITY BILL CONSUMER INVOICE Service Address Premises Address Level 8 Tech CyberPark Gurugram "
+        "Utility Provider Energy Bill Meter Number Billing Cycle Total Amount Due"
+    )
+    upload_res = client.post(
+        f"/api/v1/vendors/{vendor_id}/documents",
+        files={"file": ("utility_bill.pdf", make_pdf_with_text(pdf_text), "application/pdf")},
+        data={"document_category": "ADDRESS_PROOF"},
+    )
+    doc_id = upload_res.json()["id"]
+
+    cls_res = client.post(f"/api/v1/vendors/{vendor_id}/documents/{doc_id}/classify")
+    assert cls_res.status_code == 200
+    cls_data = cls_res.json()
+
+    assert isinstance(cls_data["confidence_score"], float)
+    assert 0.0 <= cls_data["confidence_score"] <= 1.0
+
+    # Check vendor activity log phrasing
+    act_res = client.get(f"/api/v1/vendors/{vendor_id}/activities")
+    assert act_res.status_code == 200
+    activities = act_res.json()["items"]
+    classified_activities = [a for a in activities if a["event_type"] == "DOCUMENT_CLASSIFIED"]
+    assert len(classified_activities) > 0
+    desc = classified_activities[0]["description"]
+    assert "rule-based match score" in desc
+    assert "% confidence" not in desc
+
