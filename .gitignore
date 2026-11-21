@@ -46,6 +46,7 @@ yarn-error.log*
 *.sqlite3
 storage/
 uploads/
+data/
 
 # Environment & Secrets
 .env

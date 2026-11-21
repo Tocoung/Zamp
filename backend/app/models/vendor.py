@@ -88,6 +88,14 @@ class Vendor(Base):
         order_by="asc(VendorActivity.created_at)",
     )
 
+    # Supporting documents relationship
+    documents = relationship(
+        "VendorDocument",
+        back_populates="vendor",
+        cascade="all, delete-orphan",
+        order_by="desc(VendorDocument.created_at)",
+    )
+
     __table_args__ = (
         Index("ix_vendors_country_reg", "country_of_incorporation", "registration_number"),
         Index("ix_vendors_tax_jurisdiction", "country_of_incorporation", "tax_id_type", "tax_id_number"),

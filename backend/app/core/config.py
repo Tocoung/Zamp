@@ -69,6 +69,22 @@ class Settings(BaseSettings):
     # Must be set in environment. Never logged or exposed.
     VENDOR_DATA_ENCRYPTION_KEY: Optional[str] = None
 
+    # Document storage & encryption settings
+    DOCUMENT_STORAGE_DIR: str = "data/documents"
+    MAX_DOCUMENT_FILE_SIZE_BYTES: int = 10 * 1024 * 1024  # 10 MB maximum upload size
+    DOCUMENT_ENCRYPTION_KEY: Optional[str] = None  # Optional dedicated key; falls back to VENDOR_DATA_ENCRYPTION_KEY
+
+    @property
+    def resolved_document_storage_dir(self) -> Path:
+        """Resolve document storage directory predictably against project root.
+        
+        Guarantees that files are placed securely outside the frontend or webroot directories.
+        """
+        raw_path = Path(self.DOCUMENT_STORAGE_DIR)
+        if not raw_path.is_absolute():
+            return (PROJECT_ROOT / raw_path).resolve()
+        return raw_path.resolve()
+
     @property
     def resolved_database_url(self) -> str:
         """Resolve relative SQLite database paths predictably to the project root directory.

@@ -33,6 +33,7 @@ import {
 import { ValidationReport } from './ValidationReport';
 import { DecisionReport } from './DecisionReport';
 import { VendorActivityTimeline } from './VendorActivityTimeline';
+import { DocumentManager } from './DocumentManager';
 
 interface VendorDetailModalProps {
   vendor: VendorResponse | null;
@@ -680,12 +681,20 @@ export const VendorDetailModal: React.FC<VendorDetailModalProps> = ({
                 </div>
               </div>
 
-              {/* Section 6: Lifecycle Activity History */}
+              {/* Section 6: Supporting Documents Intake */}
+              <div className="pt-2 border-t border-slate-200">
+                <DocumentManager
+                  vendorId={vendor.id}
+                  onActivityChange={() => loadActivities(vendor.id)}
+                />
+              </div>
+
+              {/* Section 7: Lifecycle Activity History */}
               <div className="pt-2 border-t border-slate-200">
                 <VendorActivityTimeline activities={activities} isLoading={isLoadingActivities} />
               </div>
 
-              {/* Section 7: Metadata */}
+              {/* Section 8: Metadata */}
               <div className="pt-2 border-t border-slate-100 flex flex-wrap items-center justify-between gap-3 text-[11px] text-slate-400">
                 <div className="flex items-center gap-1">
                   <Clock className="w-3.5 h-3.5" />

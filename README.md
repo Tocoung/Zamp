@@ -1,25 +1,26 @@
 # Zamp — AI-Powered Vendor Onboarding Automation
 
 > **Case Study:** Zamp AI Solutions Analyst Case Study  
-> **Phase:** 1 (Step 5 — End-to-End Integration & Testing)  
-> **Status:** Fully Integrated, Hardened, Tested, and Verified (115 Automated Tests Passing)  
+> **Phase:** 2 (Step 1 — Document Intake & Secure Storage)  
+> **Status:** Fully Integrated, Hardened, Tested, and Verified (133 Automated Tests Passing)  
 
-An automated platform designed to streamline vendor company onboarding, compliance document extraction, multi-source verification, deterministic validation, explainable decisioning (`APPROVED` / `PENDING` / `REJECTED`), lifecycle activity tracking, and human-in-the-loop review.
+An automated platform designed to streamline vendor company onboarding, compliance document intake & secure storage, multi-source verification, deterministic validation, explainable decisioning (`APPROVED` / `PENDING` / `REJECTED`), lifecycle activity tracking, and human-in-the-loop review.
 
 ---
 
 ## 1. Architecture & Technology Stack
 
-The project uses a clean **Modular Monolith** architecture with decoupled presentation, validation, decision, activity, and service layers:
+The project uses a clean **Modular Monolith** architecture with decoupled presentation, validation, decision, document storage, activity, and service layers:
 
-- **Frontend:** React 18 + TypeScript + Vite + Tailwind CSS + Lucide React (Vendor intake form, vendor directory, full profile inspection, decision explanation, in-modal edit/correction mode, and chronological activity timeline)
-- **Backend:** Python 3.9+ + FastAPI + Pydantic v2 + Uvicorn + Cryptography (Fernet)
+- **Frontend:** React 18 + TypeScript + Vite + Tailwind CSS + Lucide React (Vendor intake form, vendor directory, full profile inspection, decision explanation, in-modal edit/correction mode, chronological activity timeline, and supporting documents intake manager)
+- **Backend:** Python 3.9+ + FastAPI + Pydantic v2 + Uvicorn + Cryptography (Fernet authenticated encryption at rest)
+- **Document Intake & Secure Storage:** Dedicated storage service (`backend/app/core/storage.py`) and validator (`backend/app/core/document_validator.py`) enforcing magic-byte inspection, atomic `.tmp` writes, path traversal prevention, authenticated symmetric encryption at rest (Fernet AES-128-CBC + HMAC-SHA256), and SHA-256 integrity checksums.
 - **Validation Engine:** Modular, decoupled rule engine (`backend/app/validation/`) evaluating 28 deterministic rules across required fields, country-aware statutory formats, and cross-field consistency.
 - **Decision Engine:** Deterministic business policy and explainability engine (`backend/app/decision/`) assigning `APPROVED`, `PENDING`, or `REJECTED` outcomes with stable reason codes and actionable recommendations.
-- **Activity & Lifecycle History:** Dedicated `vendor_activities` table tracking discrete lifecycle events (`VENDOR_SUBMITTED`, `DECISION_EXECUTED`, `VENDOR_UPDATED`, `DECISION_REEVALUATED`) in deterministic chronological order with zero sensitive financial data leakage.
+- **Activity & Lifecycle History:** Dedicated `vendor_activities` table tracking discrete lifecycle events (`VENDOR_SUBMITTED`, `DECISION_EXECUTED`, `VENDOR_UPDATED`, `DECISION_REEVALUATED`, `DOCUMENT_UPLOADED`, `DOCUMENT_DELETED`) in deterministic chronological order with zero sensitive financial data leakage.
 - **Persistence:** SQLAlchemy 2.0 (Active: SQLite with deterministic path resolution; Production interface: PostgreSQL via `DATABASE_URL` with driver).
-- **Audit History:** Dedicated `vendor_decisions` table preserving immutable decision snapshots transactionally without duplicating sensitive banking data.
-- **Testing:** Pytest + FastAPI TestClient with temporary isolated SQLite databases (**115 automated tests passing**).
+- **Audit History:** Dedicated `vendor_decisions` and `vendor_documents` tables preserving immutable audit records transactionally.
+- **Testing:** Pytest + FastAPI TestClient with temporary isolated SQLite databases and isolated storage directories (**133 automated tests passing**).
 
 Detailed architectural boundaries and module roadmaps can be found in [docs/architecture.md](docs/architecture.md).
 
@@ -399,23 +400,58 @@ The underlying validation engine resides in `backend/app/validation/`:
 
 ---
 
-## 8. Health & Readiness Probes
+## 8. Document Intake & Secure Storage Architecture (Phase 2, Step 1)
+
+Phase 2, Step 1 introduces enterprise multi-document intake and encrypted storage at rest for vendor onboarding artifacts.
+
+### A. Core Architecture & Storage Guarantees
+- **Encrypted Blob Storage at Rest:** Files are encrypted with Fernet symmetric authenticated encryption (`AES-128-CBC + HMAC-SHA256`) and stored outside public web roots (`data/documents/`). Internal physical paths and encryption tokens are never returned in public APIs.
+- **Path Traversal Prevention:** Storage paths use non-enumerable UUID identifiers (`{vendor_id}/{document_id}.enc`) with containment assertions (`target.relative_to(root)`). Path traversal (`../`) attempts raise `StoragePathTraversalError`.
+- **Atomic Writes & Rollback:** Uploaded files write to `.tmp` files before atomic rename. If database persistence fails, disk files are immediately purged and the transaction rolled back.
+- **Cryptographic Integrity:** SHA-256 hashes are calculated on unencrypted inputs and verified during retrieval to guarantee file authenticity.
+
+### B. Upload Validation & Defense in Depth
+- **Size Limit:** Enforces 10 MB (`10,485,760` bytes) maximum size and rejects 0-byte uploads (`HTTP 413` / `HTTP 400`).
+- **File Format Whitelist:** Accepts only `.pdf`, `.png`, `.jpg`, and `.jpeg`.
+- **Magic Byte Signature Inspection:** Reads binary headers to confirm true file types:
+  - PDF: `%PDF-`
+  - PNG: `\x89PNG\r\n\x1a\n`
+  - JPEG: `\xFF\xD8\xFF`
+  Mismatched extensions or declared MIME headers are rejected with `HTTP 400`.
+- **Filename Sanitization:** Path delimiters, null bytes, and traversal tokens are stripped to produce safe display filenames.
+
+### C. Document REST API Endpoints
+- `POST /api/v1/vendors/{vendor_id}/documents`: Multipart intake endpoint.
+- `GET /api/v1/vendors/{vendor_id}/documents`: Paginated listing with optional `?category=` filter.
+- `GET /api/v1/vendors/{vendor_id}/documents/{document_id}`: Metadata retrieval.
+- `GET /api/v1/vendors/{vendor_id}/documents/{document_id}/content`: Authenticated decrypted file download stream with `Content-Disposition: attachment; filename="<sanitized>"` and `X-Content-Type-Options: nosniff`.
+- `DELETE /api/v1/vendors/{vendor_id}/documents/{document_id}`: Removes metadata and purges ciphertext from disk (`204 No Content`).
+
+### D. Audit Activity Tracking
+Every document upload and deletion records an event in `VendorActivity`:
+- `DOCUMENT_UPLOADED`: Records filename, category, and formatted byte size.
+- `DOCUMENT_DELETED`: Records document deletion without leaking storage keys.
+
+---
+
+## 9. Health & Readiness Probes
 
 - **`GET /healthz` (Liveness):** Process check (`200 OK`, `{"status": "alive"}`).
 - **`GET /readyz` (Readiness):** Dependency probe (`200 OK` with database connected; `503 Service Unavailable` if degraded).
 
 ---
 
-## 9. Verification & Test Execution
+## 10. Verification & Test Execution
 
 ### Backend Automated Test Suite
 ```bash
 PYTHONPATH=backend backend/.venv/bin/pytest backend/tests/ -v
 ```
-**Result:** **115 passed in 0.35s** (Exit code: `0`).
+**Result:** **133 passed in 0.61s** (Exit code: `0`).
 
 Includes complete coverage across:
-- `test_end_to_end_lifecycle.py`: 5 comprehensive lifecycle tests (Submission $\to$ Persistence $\to$ Validation $\to$ Decision $\to$ Status Update $\to$ History $\to$ Correction $\to$ Re-evaluation, decryption failure hardening, seeder scenarios and idempotency, activity history pagination and masking).
+- `test_documents.py`: 18 tests for document intake, PDF/PNG/JPEG validation, 10MB limits, magic bytes, path traversal sanitization, cross-vendor isolation, encrypted storage at rest, exact binary reproduction, and cascade deletion.
+- `test_end_to_end_lifecycle.py`: 5 comprehensive lifecycle tests (Submission $\to$ Persistence $\to$ Validation $\to$ Decision $\to$ Status Update $\to$ History $\to$ Correction $\to$ Re-evaluation).
 - `test_decision_api.py`: 13 integration tests for decision routes, transactional integrity, and explainability.
 - `test_decision_engine.py`: 31 tests covering policy mapping, registry coverage, and action thresholds.
 - `test_validation_rules.py`: 18 tests for country-specific statutory formats and consistency.
@@ -433,11 +469,10 @@ npm --prefix frontend run build
 
 ---
 
-## 10. Scope Boundaries & Deferred Capabilities (Beyond Phase 1)
+## 11. Scope Boundaries & Deferred Capabilities (Beyond Phase 2, Step 1)
 
-In strict adherence to Phase 1 boundaries, the following advanced capabilities are deliberately deferred to future roadmap phases:
-- **Optical Character Recognition (OCR):** Automated extraction from scanned PDF/image bank statements and incorporation certificates (Planned: Phase 2).
-- **Multi-Source Cross-Verification:** Automated reconciliation between uploaded document OCR outputs, tax authority registries, and web intake data (Planned: Phase 3).
-- **LLM / GenAI Agents:** Autonomous natural language explanations or agentic clarification emails (Planned: Phase 4).
-- **Full Human-in-the-Loop Workflow Queues:** Dedicated role-based multi-user review queues, ticketing, and exception routing (Planned: Phase 5).
-- **Distributed Event-Sourcing Infrastructure:** Kafka / Debezium audit buses and external key vaults (Production infrastructure roadmap).
+In strict adherence to Phase 2, Step 1 boundaries, the following advanced capabilities are deliberately deferred to subsequent steps:
+- **Optical Character Recognition (OCR):** Automated text extraction from scanned PDFs/images (Planned: Phase 2, Step 2).
+- **Document Classification & Cross-Document Verification:** Automated matching of extracted document fields against web intake form values (Planned: Phase 2, Step 3).
+- **Automated Document-Driven Decisioning:** Triggering status transitions based on document contents (Planned: Phase 2, Step 3).
+- **Human-in-the-Loop Review Queues:** Dedicated exception triage and manual document approval workflows (Planned: Phase 3).

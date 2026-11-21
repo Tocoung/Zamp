@@ -495,3 +495,156 @@ export async function updateVendor(
 
   return response.json();
 }
+
+// ==========================================
+// Phase 2, Step 1: Document Management Types & API
+// ==========================================
+
+export type DocumentCategory =
+  | 'CERTIFICATE_OF_INCORPORATION'
+  | 'TAX_CERTIFICATE'
+  | 'BANK_PROOF'
+  | 'ADDRESS_PROOF'
+  | 'OTHER'
+  | 'UNKNOWN';
+
+export interface VendorDocumentResponse {
+  id: string;
+  vendor_id: string;
+  original_filename: string;
+  sanitized_filename: string;
+  document_category: DocumentCategory | string;
+  mime_type: string;
+  file_extension: string;
+  file_size_bytes: number;
+  sha256_checksum: string;
+  upload_status: string;
+  document_version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface VendorDocumentPagination {
+  items: VendorDocumentResponse[];
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+}
+
+export async function fetchVendorDocuments(
+  vendorId: string,
+  category?: string,
+  page = 1,
+  pageSize = 50
+): Promise<VendorDocumentPagination> {
+  let url = `${API_BASE_URL}/vendors/${vendorId}/documents?page=${page}&page_size=${pageSize}`;
+  if (category) {
+    url += `&category=${encodeURIComponent(category)}`;
+  }
+
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: {
+      Accept: 'application/json',
+    },
+  });
+
+  if (!response.ok) {
+    if (response.status === 404) {
+      throw new Error(`Vendor with ID '${vendorId}' not found`);
+    }
+    throw new Error(`Failed to fetch documents (HTTP ${response.status})`);
+  }
+
+  return response.json();
+}
+
+export async function uploadVendorDocument(
+  vendorId: string,
+  file: File,
+  category: DocumentCategory | string = 'OTHER'
+): Promise<VendorDocumentResponse> {
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('document_category', category);
+
+  const response = await fetch(`${API_BASE_URL}/vendors/${vendorId}/documents`, {
+    method: 'POST',
+    body: formData,
+  });
+
+  if (!response.ok) {
+    let errorMsg = `Upload failed (HTTP ${response.status})`;
+    try {
+      const err = await response.json();
+      if (err.detail) {
+        errorMsg = typeof err.detail === 'string' ? err.detail : JSON.stringify(err.detail);
+      }
+    } catch {
+      // fallback
+    }
+    throw new Error(errorMsg);
+  }
+
+  return response.json();
+}
+
+export async function downloadVendorDocument(
+  vendorId: string,
+  documentId: string,
+  filename: string
+): Promise<void> {
+  const response = await fetch(
+    `${API_BASE_URL}/vendors/${vendorId}/documents/${documentId}/content`,
+    {
+      method: 'GET',
+    }
+  );
+
+  if (!response.ok) {
+    let errorMsg = `Download failed (HTTP ${response.status})`;
+    try {
+      const err = await response.json();
+      if (err.detail) errorMsg = err.detail;
+    } catch {
+      // fallback
+    }
+    throw new Error(errorMsg);
+  }
+
+  const blob = await response.blob();
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.style.display = 'none';
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  window.URL.revokeObjectURL(url);
+  document.body.removeChild(a);
+}
+
+export async function deleteVendorDocument(
+  vendorId: string,
+  documentId: string
+): Promise<void> {
+  const response = await fetch(
+    `${API_BASE_URL}/vendors/${vendorId}/documents/${documentId}`,
+    {
+      method: 'DELETE',
+    }
+  );
+
+  if (!response.ok) {
+    let errorMsg = `Delete failed (HTTP ${response.status})`;
+    try {
+      const err = await response.json();
+      if (err.detail) errorMsg = err.detail;
+    } catch {
+      // fallback
+    }
+    throw new Error(errorMsg);
+  }
+}
+

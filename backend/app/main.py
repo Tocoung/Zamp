@@ -47,8 +47,14 @@ async def lifespan(app: FastAPI):
         from app.models.vendor import Vendor  # noqa: F401 - ensure vendor model registered
         from app.models.decision import VendorDecision  # noqa: F401 - ensure decision model registered
         from app.models.activity import VendorActivity  # noqa: F401 - ensure activity model registered
+        from app.models.document import VendorDocument  # noqa: F401 - ensure document model registered
         Base.metadata.create_all(bind=engine)
         logger.info("Database schema verified and initialized.")
+
+        # Ensure secure document storage directory exists
+        from app.core.storage import document_storage
+        document_storage.ensure_storage_dir()
+        logger.info(f"Secure document storage directory initialized: {document_storage.storage_dir}")
     except Exception as e:
         logger.critical(f"Database schema initialization failed during startup: {type(e).__name__}")
         raise RuntimeError(f"Database schema initialization failed: {type(e).__name__}") from e

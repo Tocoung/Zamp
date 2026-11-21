@@ -18,6 +18,9 @@ from app.main import app as fastapi_app
 from app.core.config import settings, PROJECT_ROOT
 from app.db.base import Base
 from app.models.vendor import Vendor  # noqa: F401 - ensures vendor model is registered
+from app.models.document import VendorDocument  # noqa: F401 - ensures document model is registered
+from app.models.decision import VendorDecision  # noqa: F401 - ensures decision model is registered
+from app.models.activity import VendorActivity  # noqa: F401 - ensures activity model is registered
 from app.db.session import get_db, check_db_connection
 
 # Ensure deterministic encryption key for test session

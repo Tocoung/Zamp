@@ -2,8 +2,8 @@
 ## Architecture Design Document — Vendor Onboarding Automation
 
 **Author:** Lead Software Engineer  
-**Version:** 1.5.0 (Phase 1 — Step 5: End-to-End Integration & Testing)  
-**Status:** Approved & Implemented Foundation, Security Hardening, Deterministic Validation, Decision Engine, & End-to-End Integration  
+**Version:** 2.1.0 (Phase 2 — Step 1: Document Intake & Secure Storage)  
+**Status:** Approved & Implemented Foundation, Security Hardening, Deterministic Validation, Decision Engine, End-to-End Integration, & Document Intake/Secure Storage  
 
 ---
 
@@ -357,8 +357,8 @@ flowchart TD
     end
 
     subgraph P2["Phase 2: Intelligent Document Processing & Verification"]
-        D1["Multi-Document Ingestion & Secure Storage"] --> D2["OCR & Structured Extraction Pipeline"]
-        D2 --> D3["Cross-Document Verification & Sanity Checks"]
+        D1["Multi-Document Ingestion & Secure Storage (IMPLEMENTED)"] --> D2["OCR & Structured Extraction Pipeline (Planned)"]
+        D2 --> D3["Cross-Document Verification & Sanity Checks (Planned)"]
     end
 
     subgraph P3["Phase 3: Exception Handling & Human-in-the-Loop Review"]
@@ -395,10 +395,70 @@ flowchart TD
 | **Decision Engine (Approved/Pending/Rejected)** | Phase 1 (Step 4) | **Implemented** | `backend/app/decision/`, `backend/app/services/decision_service.py` |
 | **Decision Policy & Evidence Hardening** | Phase 1 (Step 4.1) | **Implemented** | `backend/app/decision/config.py`, `backend/app/decision/rules.py`, `backend/app/services/decision_service.py` |
 | **End-to-End Core Integration & Activity History** | Phase 1 (Step 5) | **Implemented** | `backend/app/api/v1/endpoints/vendors.py`, `backend/app/models/activity.py`, `backend/app/scripts/seed_demo_data.py`, `frontend/src/components/VendorActivityTimeline.tsx` |
-| **Document Processing & OCR** | Phase 2 | *Planned* | `backend/app/services/document_service.py` |
+| **Document Intake & Secure Storage** | Phase 2 (Step 1) | **Implemented** | `backend/app/models/document.py`, `backend/app/core/storage.py`, `backend/app/core/document_validator.py`, `backend/app/services/document_service.py`, `backend/app/api/v1/endpoints/documents.py`, `frontend/src/components/DocumentManager.tsx` |
+| **Document Processing & OCR** | Phase 2 (Step 2) | *Planned* | `backend/app/services/ocr_service.py` |
+| **Cross-Document Verification** | Phase 2 (Step 3) | *Planned* | `backend/app/services/cross_doc_service.py` |
 | **Human-in-the-Loop Review** | Phase 3 | *Planned* | `backend/app/services/review_service.py` |
 | **Audit Trail & Logging** | Phase 4 | *Planned* | `backend/app/services/audit_service.py` |
 | **LLM Verification Agents** | Phase 5 | *Planned* | `backend/app/services/ai_agent_service.py` |
+
+---
+
+## 10. Phase 2 — Step 1: Document Intake & Secure Storage Architecture
+
+Phase 2, Step 1 establishes the enterprise document foundation for vendor compliance artifacts (tax certificates, proof of banking, certificates of incorporation, and address verification).
+
+### A. Core Architectural Tenets & Scope Boundaries
+- **Strict Intake Foundation:** Focuses solely on safe binary upload, validation, secure storage, authenticated retrieval, and metadata management.
+- **Explicit Scope Restrictions:** Strictly defers OCR text extraction, layout analysis, automated document classification, cross-document comparison, and automated decision changes to subsequent Phase 2 steps.
+- **Defense in Depth:** Files are never stored under public webroots, paths cannot be manipulated via traversal attacks, binary contents are verified against magic byte signatures, and files at rest are cryptographically encrypted.
+
+### B. Relational Data Model (`vendor_documents`)
+The `VendorDocument` model (`backend/app/models/document.py`) cleanly separates public metadata from physical storage tokens:
+- `id`: UUID (Primary Key).
+- `vendor_id`: Foreign key to `vendors.id` (with `ON DELETE CASCADE` and ORM `cascade="all, delete-orphan"`).
+- `original_filename`: Client-supplied filename (e.g. `Tax_Return_2024.pdf`).
+- `sanitized_filename`: Normalized, path-traversal-stripped filename.
+- `document_category`: Enumerated category (`CERTIFICATE_OF_INCORPORATION`, `TAX_CERTIFICATE`, `BANK_PROOF`, `ADDRESS_PROOF`, `OTHER`, `UNKNOWN`).
+- `mime_type`: Normalized MIME type (`application/pdf`, `image/png`, `image/jpeg`).
+- `file_extension`: Extracted extension (`.pdf`, `.png`, `.jpg`, `.jpeg`).
+- `file_size_bytes`: Integer byte count.
+- `storage_identifier`: Opaque, non-enumerable physical storage key (`{vendor_id}/{document_id}.enc`). Strictly excluded from all public API responses and frontend views.
+- `sha256_checksum`: Hexadecimal SHA-256 hash of original plaintext binary for cryptographic integrity verification.
+- `upload_status`: Lifecycle status (`UPLOADED`, `PROCESSING`, `PROCESSED`, `FAILED`).
+- `document_version`: Monotonically incrementing integer version per `(vendor_id, document_category)`.
+- `created_at` / `updated_at`: UTC timestamps.
+
+### C. Secure Document Storage Abstraction (`DocumentStorage`)
+Physical storage operations are encapsulated in `backend/app/core/storage.py`:
+- **Directory Isolation:** Files are written to an isolated storage root (`data/documents/`) resolved deterministically outside webroots.
+- **Path Traversal Prevention:** Storage paths enforce strict lexical containment via `path.resolve().relative_to(root)`. Any path traversal (`../`) is rejected with `StoragePathTraversalError`.
+- **Authenticated Encryption at Rest:** Files are encrypted using symmetric Fernet encryption (AES-128-CBC + HMAC-SHA256 authenticated envelope). Plaintext files are never written to disk. The cryptographic key is derived from `DOCUMENT_ENCRYPTION_KEY` or falls back safely to `VENDOR_DATA_ENCRYPTION_KEY`.
+- **Atomic Disk Writes:** New files are written to `.tmp` files and flushed to disk before atomic rename to their target path, preventing partial or corrupt uploads.
+- **Transactional Rollback:** If database persistence fails during intake, the physical file on disk is removed immediately to prevent orphaned storage.
+
+### D. Multi-Layer Upload Validation (`document_validator.py`)
+Incoming uploads undergo multi-tiered defense before encryption or persistence:
+1. **Size Enforcement:** Files exceeding `10 MB` (`10,485,760` bytes) or empty files (`0` bytes) are rejected with `HTTP 413` or `HTTP 400`.
+2. **Extension Whitelist:** Only `.pdf`, `.png`, `.jpg`, and `.jpeg` are allowed. Dangerous extensions (`.exe`, `.sh`, `.php`, `.js`, etc.) are blocked.
+3. **Magic Byte Signature Inspection:** Uploads are inspected for byte-level binary signatures:
+   - PDF: `%PDF-` (`0x25 0x50 0x44 0x46 0x2D`)
+   - PNG: `\x89PNG\r\n\x1a\n` (`0x89 0x50 0x4E 0x47 0x0D 0x0A 0x1A 0x0A`)
+   - JPEG: `\xFF\xD8\xFF`
+   Mismatched declared MIME types vs. detected binary headers are rejected with `HTTP 400`.
+4. **Filename Sanitization:** Path delimiters (`/`, `\`), null bytes (`\0`), and directory traversal markers (`..`) are stripped, producing safe identifiers.
+
+### E. Document REST API Endpoints
+- `POST /api/v1/vendors/{vendor_id}/documents`: Multipart upload accepting `file` and `document_category`. Returns `201 Created` with `VendorDocumentResponse`.
+- `GET /api/v1/vendors/{vendor_id}/documents`: Paginated document list with optional `?category=` filtering.
+- `GET /api/v1/vendors/{vendor_id}/documents/{document_id}`: Document metadata inspection.
+- `GET /api/v1/vendors/{vendor_id}/documents/{document_id}/content`: Authenticated decrypted binary stream with `Content-Disposition: attachment; filename="<sanitized>"` and `X-Content-Type-Options: nosniff`.
+- `DELETE /api/v1/vendors/{vendor_id}/documents/{document_id}`: Deletes metadata and physically purges encrypted ciphertext from disk (`204 No Content`).
+
+### F. Lifecycle Audit Activity Integration
+Document mutations automatically append events to the `VendorActivity` timeline:
+- **`DOCUMENT_UPLOADED`:** Records filename, category, and formatted size.
+- **`DOCUMENT_DELETED`:** Records document removal without leaking storage keys or cryptographic parameters.
 
 ---
 
