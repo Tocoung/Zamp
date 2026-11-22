@@ -411,7 +411,7 @@ class DocumentParser:
                                 cand_val = candidate_value
                             elif candidate_pattern:
                                 pat_m = re.search(candidate_pattern, next_line, re.IGNORECASE)
-                                cand_raw = (pat_m.group(1) if pat_m.groups() else pat_m.group(0)) if pat_m else next_line
+                                cand_raw = (pat_m.group(1) if pat_m.groups() else pat_m.group(0)) if pat_m else self._isolate_candidate_value(next_line)
                                 cand_val = self._clean_str(cand_raw) or cand_raw
                             else:
                                 cand_val = self._isolate_candidate_value(next_line)

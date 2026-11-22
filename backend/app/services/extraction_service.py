@@ -113,6 +113,7 @@ class ExtractionService:
         # 7. Evaluate overall extraction run status
         extracted_count = sum(1 for f in parsed_fields.values() if f.status == FieldStatus.EXTRACTED)
         needs_review_count = sum(1 for f in parsed_fields.values() if f.status == FieldStatus.NEEDS_REVIEW)
+        unreadable_count = sum(1 for f in parsed_fields.values() if f.status == FieldStatus.UNREADABLE)
 
         if ocr_result.limitation_code in (
             ExtractionLimitationCode.ENCRYPTED_PDF.value,
@@ -130,7 +131,7 @@ class ExtractionService:
         elif extracted_count == len(parsed_fields) and len(parsed_fields) > 0:
             status = ExtractionStatus.COMPLETED
             limitation_code = None
-        elif extracted_count > 0 or needs_review_count > 0:
+        elif extracted_count > 0 or needs_review_count > 0 or unreadable_count > 0:
             status = ExtractionStatus.PARTIAL
             limitation_code = None
         else:
