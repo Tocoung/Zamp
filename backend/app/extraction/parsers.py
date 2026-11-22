@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple, Any
 
 from app.schemas.extraction import ExtractedField, FieldSource, FieldStatus
-from app.extraction.ocr_engine import OcrDocumentResult, OcrPageResult
+from app.extraction.ocr_engine import OcrDocumentResult, OcrPageResult, OcrToken
 from app.extraction.normalization import (
     NormalizationRecord,
     normalize_gstin,
@@ -20,7 +20,7 @@ from app.extraction.confidence import quality_assessor
 
 @dataclass
 class CandidateFinding:
-    """Represents a located candidate in document text with positional context."""
+    """Represents a located candidate in document text with positional context and token-level OCR metrics."""
     raw_value: Optional[str]
     all_candidates: List[str] = field(default_factory=list)
     page_number: Optional[int] = None
@@ -31,6 +31,12 @@ class CandidateFinding:
     has_label_match: bool = False
     is_exact_label: bool = False
     is_unreadable: bool = False
+    # Word-level OCR token associations
+    matched_value_tokens: List[OcrToken] = field(default_factory=list)
+    matched_label_tokens: List[OcrToken] = field(default_factory=list)
+    field_ocr_confidence: Optional[float] = None
+    label_ocr_confidence: Optional[float] = None
+    has_token_level_confidence: bool = False
 
 
 class DocumentParser:
@@ -328,6 +334,7 @@ class DocumentParser:
                         if val and len(val) > 1 and not re.match(r"^[_.\-]{2,}$", val):
                             loc = f"Page {page.page_number}, Line {line_idx + 1}"
                             snip = line[:120]
+                            val_toks, lbl_toks, val_c, lbl_c, has_tok = self._associate_tokens(page, val, label)
                             return CandidateFinding(
                                 raw_value=val,
                                 all_candidates=[val],
@@ -338,6 +345,11 @@ class DocumentParser:
                                 evidence_snippet=snip,
                                 has_label_match=True,
                                 is_exact_label=is_exact,
+                                matched_value_tokens=val_toks,
+                                matched_label_tokens=lbl_toks,
+                                field_ocr_confidence=val_c,
+                                label_ocr_confidence=lbl_c,
+                                has_token_level_confidence=has_tok,
                             )
                         elif not val or re.match(r"^[_.\-]{2,}$", val):
                             # Label exists but value is empty or obscured
@@ -361,6 +373,7 @@ class DocumentParser:
                         if next_line and len(next_line) > 1 and not re.match(r"^[_.\-]{2,}$", next_line):
                             loc = f"Page {page.page_number}, Lines {line_idx + 1}-{line_idx + 2}"
                             snip = f"{curr_line}: {next_line}"[:120]
+                            val_toks, lbl_toks, val_c, lbl_c, has_tok = self._associate_tokens(page, next_line, curr_line)
                             return CandidateFinding(
                                 raw_value=next_line,
                                 all_candidates=[next_line],
@@ -371,6 +384,11 @@ class DocumentParser:
                                 evidence_snippet=snip,
                                 has_label_match=True,
                                 is_exact_label=is_exact,
+                                matched_value_tokens=val_toks,
+                                matched_label_tokens=lbl_toks,
+                                field_ocr_confidence=val_c,
+                                label_ocr_confidence=lbl_c,
+                                has_token_level_confidence=has_tok,
                             )
                         else:
                             # Label detected on line, but next line is unreadable or empty
@@ -432,6 +450,9 @@ class DocumentParser:
             evidence_snippet=first["snippet"],
             has_label_match=False,
             is_exact_label=False,
+            matched_value_tokens=first.get("val_tokens", []),
+            field_ocr_confidence=first.get("val_conf"),
+            has_token_level_confidence=first.get("has_token_conf", False),
         )
 
     def _find_all_regex_candidates(self, ocr: OcrDocumentResult, pattern: str) -> List[str]:
@@ -455,6 +476,7 @@ class DocumentParser:
                     val = match.group(1) if match.groups() else match.group(0)
                     cleaned = self._clean_str(val)
                     if cleaned:
+                        val_toks, _, val_c, _, has_tok = self._associate_tokens(page, cleaned)
                         matches.append({
                             "val": cleaned,
                             "page_number": page.page_number,
@@ -462,6 +484,9 @@ class DocumentParser:
                             "confidence": page.confidence,
                             "location": f"Page {page.page_number}, Line {line_idx + 1}",
                             "snippet": line[:120],
+                            "val_tokens": val_toks,
+                            "val_conf": val_c,
+                            "has_token_conf": has_tok,
                         })
         return matches
 
@@ -477,6 +502,7 @@ class DocumentParser:
                     if re.search(r"\b" + re.escape(b) + r"\b", line, re.IGNORECASE):
                         loc = f"Page {page.page_number}, Line {line_idx + 1}"
                         snip = line[:120]
+                        val_toks, _, val_c, _, has_tok = self._associate_tokens(page, b, b)
                         return CandidateFinding(
                             raw_value=b,
                             all_candidates=[b],
@@ -487,6 +513,9 @@ class DocumentParser:
                             evidence_snippet=snip,
                             has_label_match=True,
                             is_exact_label=True,
+                            matched_value_tokens=val_toks,
+                            field_ocr_confidence=val_c,
+                            has_token_level_confidence=has_tok,
                         )
 
         # Fall back to labeled discovery
@@ -581,6 +610,8 @@ class DocumentParser:
             value=norm_record.normalized_value,
             extraction_method=finding.extraction_method,
             raw_ocr_confidence=finding.raw_ocr_confidence,
+            field_ocr_confidence=finding.field_ocr_confidence,
+            has_token_level_confidence=finding.has_token_level_confidence,
             has_label_match=finding.has_label_match,
             is_exact_label=finding.is_exact_label,
             is_valid_format=norm_record.is_valid_format,
@@ -627,6 +658,75 @@ class DocumentParser:
         v = re.sub(r"^[\s:\-=|/]+|[\s:\-=|/]+$", "", raw)
         clean = re.sub(r"\s+", " ", v).strip()
         return clean if clean else None
+
+    def _associate_tokens(
+        self,
+        page: Optional[OcrPageResult],
+        raw_val: Optional[str],
+        label_text: Optional[str] = None,
+    ) -> Tuple[List[OcrToken], List[OcrToken], Optional[float], Optional[float], bool]:
+        """Associates OCR tokens with raw extracted value and label.
+        
+        Returns:
+            Tuple[val_tokens, label_tokens, val_conf, label_conf, has_token_confidence]
+        """
+        if not page or not page.tokens or not raw_val:
+            return [], [], None, None, False
+
+        val_tokens = self._find_tokens_for_text(page.tokens, raw_val)
+        label_tokens = self._find_tokens_for_text(page.tokens, label_text) if label_text else []
+
+        val_conf = (
+            round(sum(t.confidence for t in val_tokens) / len(val_tokens), 2)
+            if val_tokens
+            else None
+        )
+        label_conf = (
+            round(sum(t.confidence for t in label_tokens) / len(label_tokens), 2)
+            if label_tokens
+            else None
+        )
+        has_token_conf = bool(val_tokens)
+
+        return val_tokens, label_tokens, val_conf, label_conf, has_token_conf
+
+    def _find_tokens_for_text(self, page_tokens: List[OcrToken], text: str) -> List[OcrToken]:
+        """Matches a target text to OCR tokens using word-level alignment."""
+        if not text or not page_tokens:
+            return []
+
+        words = re.findall(r"[A-Za-z0-9]+", text.lower())
+        if not words:
+            return []
+
+        # 1. Contiguous subsequence search
+        n_words = len(words)
+        for i in range(len(page_tokens) - n_words + 1):
+            match = True
+            for j in range(n_words):
+                token_word = re.sub(r"[^A-Za-z0-9]", "", page_tokens[i + j].text.lower())
+                if token_word != words[j]:
+                    match = False
+                    break
+            if match:
+                return page_tokens[i : i + n_words]
+
+        # 2. If single word or short token, check individual token contains
+        if n_words == 1:
+            target = words[0]
+            for tok in page_tokens:
+                clean_tok = re.sub(r"[^A-Za-z0-9]", "", tok.text.lower())
+                if target in clean_tok or clean_tok in target:
+                    return [tok]
+
+        # 3. Find any tokens whose text matches the words
+        matched = []
+        words_set = set(words)
+        for tok in page_tokens:
+            clean_tok = re.sub(r"[^A-Za-z0-9]", "", tok.text.lower())
+            if clean_tok in words_set:
+                matched.append(tok)
+        return matched
 
 
 document_parser = DocumentParser()

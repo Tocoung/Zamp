@@ -2,7 +2,7 @@
 
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, date
 from typing import List, Optional, Tuple
 
 
@@ -109,8 +109,17 @@ def normalize_gstin(raw: Optional[str]) -> NormalizationRecord:
     )
 
 
+def _is_valid_calendar_date(year: int, month: int, day: int) -> Tuple[bool, Optional[date], Optional[str]]:
+    """Validates that a combination of year, month, and day represents a real calendar date."""
+    try:
+        d = date(year, month, day)
+        return True, d, None
+    except ValueError as e:
+        return False, None, str(e)
+
+
 def normalize_date(raw: Optional[str]) -> NormalizationRecord:
-    """Normalizes dates to ISO 8601 (YYYY-MM-DD) and flags ambiguous numeric formats."""
+    """Normalizes dates to ISO 8601 (YYYY-MM-DD) with calendar validation and flags ambiguous numeric formats."""
     cleaned = _clean_field_text(raw).rstrip(",.")
     if not cleaned:
         return NormalizationRecord(
@@ -125,8 +134,33 @@ def normalize_date(raw: Optional[str]) -> NormalizationRecord:
     clean_no_ordinal = re.sub(r"(\d+)(?:st|nd|rd|th)\b", r"\1", cleaned, flags=re.IGNORECASE)
     clean_no_ordinal = re.sub(r"\s+", " ", clean_no_ordinal).strip()
 
-    # 1. Check for ambiguous numeric formats: DD/MM/YYYY vs MM/DD/YYYY where both DD and MM <= 12
-    # e.g., 03/04/2024 or 05-06-2023 or 01.02.2025
+    # 1. First, check unambiguous ISO 8601 (YYYY-MM-DD or YYYY/MM/DD)
+    iso_match = re.match(r"^(\d{4})([/\-\.])(\d{1,2})\2(\d{1,2})$", clean_no_ordinal)
+    if iso_match:
+        year = int(iso_match.group(1))
+        month = int(iso_match.group(3))
+        day = int(iso_match.group(4))
+        is_cal_valid, _, err_msg = _is_valid_calendar_date(year, month, day)
+        if is_cal_valid:
+            iso_str = f"{year:04d}-{month:02d}-{day:02d}"
+            return NormalizationRecord(
+                raw_value=raw,
+                normalized_value=iso_str,
+                masked_value=iso_str,
+                is_valid_format=True,
+                notes=["Normalized ISO 8601 date"],
+            )
+        else:
+            return NormalizationRecord(
+                raw_value=raw,
+                normalized_value=clean_no_ordinal,
+                masked_value=clean_no_ordinal,
+                is_valid_format=False,
+                penalty=0.60,
+                notes=[f"Invalid calendar date '{clean_no_ordinal}': {err_msg}"],
+            )
+
+    # 2. Check for numeric formats: DD/MM/YYYY or MM/DD/YYYY
     numeric_slash_match = re.match(r"^(\d{1,2})([/\-\.])(\d{1,2})\2(\d{4})$", clean_no_ordinal)
     if numeric_slash_match:
         part1 = int(numeric_slash_match.group(1))
@@ -135,7 +169,7 @@ def normalize_date(raw: Optional[str]) -> NormalizationRecord:
 
         if 1 <= part1 <= 12 and 1 <= part2 <= 12:
             if part1 != part2:
-                # Ambiguous! Cannot determine day vs month without guessing
+                # Ambiguous! Cannot determine day vs month without guessing (both 1..12)
                 return NormalizationRecord(
                     raw_value=raw,
                     normalized_value=clean_no_ordinal,
@@ -147,71 +181,111 @@ def normalize_date(raw: Optional[str]) -> NormalizationRecord:
                 )
             else:
                 # Day and month are identical (e.g. 05/05/2024)
+                is_cal_valid, _, err_msg = _is_valid_calendar_date(year, part1, part2)
+                if is_cal_valid:
+                    iso_str = f"{year:04d}-{part1:02d}-{part2:02d}"
+                    return NormalizationRecord(
+                        raw_value=raw,
+                        normalized_value=iso_str,
+                        masked_value=iso_str,
+                        is_valid_format=True,
+                        notes=["Normalized to ISO 8601 (YYYY-MM-DD)"],
+                    )
+                else:
+                    return NormalizationRecord(
+                        raw_value=raw,
+                        normalized_value=clean_no_ordinal,
+                        masked_value=clean_no_ordinal,
+                        is_valid_format=False,
+                        penalty=0.60,
+                        notes=[f"Invalid calendar date '{clean_no_ordinal}': {err_msg}"],
+                    )
+        elif part1 > 12 and 1 <= part2 <= 12:
+            # Unambiguously DD/MM/YYYY (day=part1, month=part2)
+            is_cal_valid, _, err_msg = _is_valid_calendar_date(year, part2, part1)
+            if is_cal_valid:
+                iso_str = f"{year:04d}-{part2:02d}-{part1:02d}"
+                return NormalizationRecord(
+                    raw_value=raw,
+                    normalized_value=iso_str,
+                    masked_value=iso_str,
+                    is_valid_format=True,
+                    notes=[f"Normalized DD/MM/YYYY '{clean_no_ordinal}' to ISO 8601 '{iso_str}'"],
+                )
+            else:
+                return NormalizationRecord(
+                    raw_value=raw,
+                    normalized_value=clean_no_ordinal,
+                    masked_value=clean_no_ordinal,
+                    is_valid_format=False,
+                    penalty=0.60,
+                    notes=[f"Invalid calendar date '{clean_no_ordinal}': day {part1} is invalid for month {part2} in year {year}"],
+                )
+        elif 1 <= part1 <= 12 and part2 > 12:
+            # Unambiguously MM/DD/YYYY (month=part1, day=part2)
+            is_cal_valid, _, err_msg = _is_valid_calendar_date(year, part1, part2)
+            if is_cal_valid:
                 iso_str = f"{year:04d}-{part1:02d}-{part2:02d}"
                 return NormalizationRecord(
                     raw_value=raw,
                     normalized_value=iso_str,
                     masked_value=iso_str,
                     is_valid_format=True,
-                    notes=["Normalized to ISO 8601 (YYYY-MM-DD)"],
+                    notes=[f"Normalized MM/DD/YYYY '{clean_no_ordinal}' to ISO 8601 '{iso_str}'"],
                 )
-        elif part1 > 12 and 1 <= part2 <= 12:
-            # Unambiguously DD/MM/YYYY
-            iso_str = f"{year:04d}-{part2:02d}-{part1:02d}"
+            else:
+                return NormalizationRecord(
+                    raw_value=raw,
+                    normalized_value=clean_no_ordinal,
+                    masked_value=clean_no_ordinal,
+                    is_valid_format=False,
+                    penalty=0.60,
+                    notes=[f"Invalid calendar date '{clean_no_ordinal}': day {part2} is invalid for month {part1} in year {year}"],
+                )
+        else:
             return NormalizationRecord(
                 raw_value=raw,
-                normalized_value=iso_str,
-                masked_value=iso_str,
-                is_valid_format=True,
-                notes=[f"Normalized DD/MM/YYYY '{clean_no_ordinal}' to ISO 8601 '{iso_str}'"],
-            )
-        elif 1 <= part1 <= 12 and part2 > 12:
-            # Unambiguously MM/DD/YYYY
-            iso_str = f"{year:04d}-{part1:02d}-{part2:02d}"
-            return NormalizationRecord(
-                raw_value=raw,
-                normalized_value=iso_str,
-                masked_value=iso_str,
-                is_valid_format=True,
-                notes=[f"Normalized MM/DD/YYYY '{clean_no_ordinal}' to ISO 8601 '{iso_str}'"],
+                normalized_value=clean_no_ordinal,
+                masked_value=clean_no_ordinal,
+                is_valid_format=False,
+                penalty=0.60,
+                notes=[f"Invalid calendar date '{clean_no_ordinal}': both day and month exceed valid range"],
             )
 
-    # 2. Check unambiguous standard formats
-    # Remove commas to normalize "April 15, 2021" and "15th April, 2021" into uniform whitespace separated tokens
+    # 3. Check unambiguous standard formats with word months (e.g. "15 April 2021", "April 15, 2021")
     clean_unpunctuated = clean_no_ordinal.replace(",", "")
     clean_unpunctuated = re.sub(r"\s+", " ", clean_unpunctuated).strip()
 
     formats = (
-        ("%Y-%m-%d", "%Y-%m-%d"),
         ("%d %B %Y", "%Y-%m-%d"),
         ("%d %b %Y", "%Y-%m-%d"),
         ("%B %d %Y", "%Y-%m-%d"),
         ("%b %d %Y", "%Y-%m-%d"),
-        ("%Y/%m/%d", "%Y-%m-%d"),
-        ("%d/%m/%Y", "%Y-%m-%d"),
     )
     for in_fmt, out_fmt in formats:
         try:
             dt = datetime.strptime(clean_unpunctuated, in_fmt)
-            iso_val = dt.strftime(out_fmt)
-            return NormalizationRecord(
-                raw_value=raw,
-                normalized_value=iso_val,
-                masked_value=iso_val,
-                is_valid_format=True,
-                notes=[f"Normalized date to ISO 8601 '{iso_val}'"],
-            )
+            is_cal_valid, _, err_msg = _is_valid_calendar_date(dt.year, dt.month, dt.day)
+            if is_cal_valid:
+                iso_val = dt.strftime(out_fmt)
+                return NormalizationRecord(
+                    raw_value=raw,
+                    normalized_value=iso_val,
+                    masked_value=iso_val,
+                    is_valid_format=True,
+                    notes=[f"Normalized date to ISO 8601 '{iso_val}'"],
+                )
         except ValueError:
             continue
 
-    # Unrecognized date syntax
+    # Unrecognized date syntax or invalid calendar date
     return NormalizationRecord(
         raw_value=raw,
         normalized_value=clean_no_ordinal,
         masked_value=clean_no_ordinal,
         is_valid_format=False,
         penalty=0.60,
-        notes=[f"Unrecognized date syntax '{clean_no_ordinal}'"],
+        notes=[f"Unrecognized date syntax or invalid calendar date '{clean_no_ordinal}'"],
     )
 
 

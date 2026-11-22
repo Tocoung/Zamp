@@ -579,25 +579,50 @@ When a document lacks expected fields (such as a tax certificate with registrati
 
 ---
 
-## 14. Phase 2 — Step 4: Extraction Confidence & Evidence Management Architecture
+## 14. Phase 2 — Step 4 & 4.1: Extraction Confidence, Normalization & Evidence Hardening Architecture
 
-Phase 2, Step 4 strengthens the document extraction pipeline by implementing explainable, signal-grounded confidence scores, a dedicated normalization layer, honest provenance integrity, and interactive original document page inspection.
+Phase 2, Steps 4 and 4.1 strengthen the document extraction pipeline by implementing explainable, signal-grounded confidence scores, a dedicated normalization layer, honest provenance integrity, token-level OCR confidence, calendar date validation, and hardened original document preview protection.
 
 ### A. Core Architecture & Separation of Concerns
 - **`backend/app/extraction/confidence.py` (`QualityAssessor`):**
   - Evaluates individual fields using six orthogonal, measurable evidence signals (`source_quality`, `label_match`, `format_validity`, `normalization_adjustment`, `ambiguity_penalty`, `provenance_quality`).
-  - Implements weighted composite scoring:
-    $$\text{Composite} = (0.20 \times \text{source}) + (0.25 \times \text{label}) + (0.30 \times \text{format}) + (0.15 \times \text{provenance}) + (0.10 \times \text{norm}) - \text{penalty}$$
-  - Transparent presentation: Documented strictly as "Extraction Quality Score" or "Evidence Quality" representing signal alignment and structural validity—never labeled as a statistical probability or a guarantee of external authenticity.
-  - Explainable thresholds: $\ge 0.75 \to \text{EXTRACTED}$; $< 0.75 \to \text{NEEDS\_REVIEW}$ with documented rationale.
+  - Implements an internally consistent weighted composite score with explicit weights summing to 1.00:
+    $$\text{Composite Score} = (0.25 \times \text{format\_validity}) + (0.20 \times \text{source\_quality}) + (0.20 \times \text{label\_match}) + (0.15 \times \text{provenance\_quality}) + (0.10 \times \text{normalization\_adjustment}) + (0.10 \times \text{ambiguity\_penalty})$$
+  - **Component Definitions & Weights:**
+    - `format_validity` ($w_F = 0.25$): Valid statutory format ($1.00$), invalid/malformed syntax ($0.30$).
+    - `source_quality` ($w_S = 0.20$): Digital text stream ($0.98$), word-level OCR token confidence ($0.30 - 0.95$), page-level OCR fallback ($0.30 - 0.90$).
+    - `label_match` ($w_L = 0.20$): Exact primary header ($1.00$), supporting/alias label ($0.85$), unlabeled pattern ($0.50$).
+    - `provenance_quality` ($w_P = 0.15$): Page identified ($+0.50$), location line ($+0.30$), verbatim snippet ($+0.20$).
+    - `normalization_adjustment` ($w_N = 0.10$): Baseline $1.00$ minus deductions ($-0.50$ for ambiguous date, $-0.20$ for OCR character repair).
+    - `ambiguity_penalty` ($w_A = 0.10$): Single candidate ($1.00$), multiple competing candidates in document ($0.60$).
+  - **Special Statuses:**
+    - `MISSING`: Quality score is strictly $0.00$ ($S=0, L=0, F=0, P=0, N=0, A=1.00$). Source is `None`.
+    - `UNREADABLE`: Quality score is $0.20$. Captures label and region while indicating illegible text.
+  - **Transparent Presentation:** Documented strictly as "Extraction Quality Score" or "Evidence Quality" representing signal alignment and structural validity—never labeled as a statistical probability or a guarantee of external authenticity.
+  - **Explainable Thresholds:** $\ge 0.75 \to \text{EXTRACTED}$; $< 0.75 \to \text{NEEDS\_REVIEW}$ with documented rationale.
+- **`backend/app/extraction/ocr_engine.py` (`OcrEngine` & `OcrToken`):**
+  - Uses Tesseract word-level data (`image_to_data`) to capture word-level `OcrToken` records (text, confidence `[0.0 - 1.0]`, bounding box coordinates, line/word indices).
+  - Associates candidate fields with the specific tokens that produced their value and label.
+  - Two fields on the same OCR page evaluate with their distinct token confidences rather than an identical whole-page average.
+  - Page-level confidence is retained exclusively as a fallback when token data is missing, clearly documented in the quality explanation.
+  - Digital PDFs preserve digital text stream fidelity ($0.98$) without inventing OCR tokens.
+  - Zero raw OCR tokens or sensitive internal coordinates are exposed through public APIs.
 - **`backend/app/extraction/normalization.py`:**
   - Dedicated normalization functions (`normalize_gstin`, `normalize_date`, `normalize_entity_name`, `normalize_address`, `normalize_ifsc`, `normalize_account_number`).
-  - Tracks OCR character substitutions (`O` $\leftrightarrow$ `0`, `I` $\leftrightarrow$ `1`), notes repairs, and assigns normalization confidence penalties.
-  - Distinguishes unambiguous dates from ambiguous dates (e.g. `03/04/2024` where month/day cannot be resolved without guessing), flagging them for operator verification (`NEEDS_REVIEW`) rather than making ungrounded assumptions.
+  - **Calendar Date Validation:** All date normalization branches validate real calendar dates via `datetime.date(year, month, day)`. Non-existent dates like `31/04/2024`, non-leap-year `29/02/2023`, or `2024-04-31` fail validation (`is_valid_format = False`) with clear error notes.
+  - Standardizes valid leap days (`29/02/2024` $\to$ `2024-02-29`), identical day/month (`05/05/2024` $\to$ `2024-05-05`), and ISO dates.
+  - Flags ambiguous numeric dates (`03/04/2024`) for operator verification (`NEEDS_REVIEW`) rather than guessing day vs month.
+  - Tracks OCR character repairs (`O` $\leftrightarrow$ `0`, `I` $\leftrightarrow$ `1`), notes repairs, and flags for review.
   - Cleans addresses and reconnects hyphenated line-breaks (`Indus-\ntrial` $\to$ `Industrial`).
   - Preserves corporate suffixes (`Pvt Ltd`, `LLC`, `Corp`, `Inc`) without aggressive title-casing.
   - Masks financial account numbers by default (`****1234`) with zero plaintext leaks.
-- **`backend/app/schemas/extraction.py`:**
+- **`backend/app/services/extraction_service.py` (`render_document_page_preview`):**
+  - **Preview Safety & Bounded Validation:** Image previews (PNG/JPEG) are validated with Pillow before serving.
+  - **Dimension & Pixel Limits:** Rejects images exceeding $4096\text{px}$ in width/height or $16\text{MP}$ in total pixels (`Image.MAX_IMAGE_PIXELS = 16_000_000`).
+  - **Decompression Bomb Protection:** Catches `DecompressionBombError` and `DecompressionBombWarning`, returning HTTP 400.
+  - **Safe Normalization:** Converts palette/CMYK images to RGB/RGBA and encodes to a normalized in-memory PNG stream with zero disk plaintext.
+  - **Security Headers:** Sets `Cache-Control: private, no-store, max-age=0` and `X-Content-Type-Options: nosniff`.
+  - Rejects invalid page numbers (`page_number != 1` for single-image files) and isolates cross-vendor access with HTTP 404.
   - Expands `FieldStatus` to include `NEEDS_REVIEW` and `UNREADABLE`.
   - Enriches `ExtractedField` with `quality_score`, `quality_breakdown`, `quality_explanation`, and `normalization_notes`.
   - Enforces provenance integrity: missing fields strictly set `source: None` with `page_number: None` (no fabricated defaults).

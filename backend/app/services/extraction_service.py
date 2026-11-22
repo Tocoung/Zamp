@@ -9,9 +9,16 @@ from pypdf import PdfReader
 try:
     import pdf2image
     from PIL import Image
+    from PIL.Image import DecompressionBombError, DecompressionBombWarning
     HAS_PREVIEW_IMAGING = True
 except ImportError:
     HAS_PREVIEW_IMAGING = False
+    DecompressionBombError = Exception
+    DecompressionBombWarning = UserWarning
+
+MAX_PREVIEW_WIDTH = 4096
+MAX_PREVIEW_HEIGHT = 4096
+MAX_PREVIEW_TOTAL_PIXELS = 16_000_000
 
 from app.models.vendor import Vendor
 from app.models.document import VendorDocument
@@ -204,11 +211,53 @@ class ExtractionService:
 
         norm_mime = str(doc.mime_type or "").strip().lower()
 
-        # 1. Image documents: serve the image bytes directly
+        # 1. Image documents: bounded validation, decompression bomb protection, normalization to safe PNG stream
         if norm_mime in ("image/png", "image/jpeg", "image/jpg"):
             if page_number != 1:
                 raise DocumentPreviewError(f"Image document only has 1 page (requested page {page_number}).")
-            return content, norm_mime, 1
+
+            if not HAS_PREVIEW_IMAGING:
+                raise DocumentPreviewError("Image preview rendering engine is unavailable on host.")
+
+            # Enforce Pillow total pixel limit
+            Image.MAX_IMAGE_PIXELS = MAX_PREVIEW_TOTAL_PIXELS
+
+            # Verify integrity
+            try:
+                with Image.open(io.BytesIO(content)) as verify_img:
+                    verify_img.verify()
+            except (DecompressionBombError, DecompressionBombWarning):
+                raise DocumentPreviewError("Image exceeds safe decompression limits (decompression bomb detected).")
+            except Exception as e:
+                raise DocumentPreviewError(f"Malformed or corrupted image content ({type(e).__name__}).")
+
+            # Load and bounded process
+            try:
+                with Image.open(io.BytesIO(content)) as img:
+                    w, h = img.size
+                    if w > MAX_PREVIEW_WIDTH or h > MAX_PREVIEW_HEIGHT or (w * h) > MAX_PREVIEW_TOTAL_PIXELS:
+                        raise DocumentPreviewError(
+                            f"Image dimensions ({w}x{h}) exceed maximum allowed preview size ({MAX_PREVIEW_WIDTH}x{MAX_PREVIEW_HEIGHT}, 16MP)."
+                        )
+
+                    # Normalize color mode to RGB or RGBA for safe PNG output
+                    if img.mode not in ("RGB", "RGBA"):
+                        img = img.convert("RGBA" if "A" in img.mode else "RGB")
+
+                    # Scale down to display limit if larger than 1800
+                    if max(w, h) > 1800:
+                        img.thumbnail((1800, 1800), Image.Resampling.LANCZOS)
+
+                    out_buf = io.BytesIO()
+                    img.save(out_buf, format="PNG")
+                    return out_buf.getvalue(), "image/png", 1
+            except DocumentPreviewError:
+                raise
+            except (DecompressionBombError, DecompressionBombWarning):
+                raise DocumentPreviewError("Image exceeds safe decompression limits (decompression bomb detected).")
+            except Exception as e:
+                logger.error("Failed to render image preview: %s", type(e).__name__)
+                raise DocumentPreviewError(f"Failed to process image preview ({type(e).__name__}).")
 
         # 2. PDF documents: render the requested page via pdf2image
         if norm_mime == "application/pdf":

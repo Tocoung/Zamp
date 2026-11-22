@@ -30,7 +30,7 @@ class QualityAssessment:
 
 
 class QualityAssessor:
-    """Evaluates field-level extraction confidence from concrete measured signals."""
+    """Evaluates field-level extraction evidence quality and confidence from concrete measured signals."""
 
     def evaluate_field(
         self,
@@ -49,8 +49,19 @@ class QualityAssessor:
         has_location: bool,
         has_snippet: bool,
         is_unreadable: bool = False,
+        field_ocr_confidence: Optional[float] = None,
+        has_token_level_confidence: bool = False,
     ) -> QualityAssessment:
-        """Computes deterministic quality score, signal breakdown, and explainable status."""
+        """Computes deterministic quality score, signal breakdown, and explainable status.
+        
+        Composite formula weights (summing to 1.00):
+            format_validity (w_F = 0.25)
+            source_quality (w_S = 0.20)
+            label_match (w_L = 0.20)
+            provenance_quality (w_P = 0.15)
+            normalization_adjustment (w_N = 0.10)
+            ambiguity_penalty (w_A = 0.10)
+        """
         # 1. Unreadable field handling
         if is_unreadable:
             breakdown = QualityBreakdown(
@@ -87,19 +98,25 @@ class QualityAssessor:
                 reasons_for_review=["Field absent from document"],
             )
 
-        # 3. Source Quality Signal
-        # Digital text stream provides highest baseline fidelity; OCR reflects measured engine score
+        # 3. Source Quality Signal (w_S = 0.20)
+        # Digital text stream provides highest baseline fidelity;
+        # OCR reflects measured word-token confidence when available, falling back to page-level confidence
+        used_page_fallback = False
         if extraction_method == "DIGITAL_TEXT":
             source_q = 0.98
         elif extraction_method == "OCR":
-            if raw_ocr_confidence is not None and raw_ocr_confidence > 0:
-                source_q = min(0.92, max(0.40, float(raw_ocr_confidence)))
+            if has_token_level_confidence and field_ocr_confidence is not None:
+                source_q = min(0.95, max(0.30, float(field_ocr_confidence)))
+            elif raw_ocr_confidence is not None and raw_ocr_confidence > 0:
+                source_q = min(0.90, max(0.30, float(raw_ocr_confidence)))
+                used_page_fallback = True
             else:
-                source_q = 0.80
+                source_q = 0.70
+                used_page_fallback = True
         else:
             source_q = 0.50
 
-        # 4. Label Match Signal
+        # 4. Label Match Signal (w_L = 0.20)
         if is_exact_label:
             label_q = 1.00
         elif has_label_match:
@@ -107,13 +124,13 @@ class QualityAssessor:
         else:
             label_q = 0.50  # Unlabelled regex or pattern match
 
-        # 5. Format Validity Signal
+        # 5. Format Validity Signal (w_F = 0.25)
         if is_valid_format:
             format_q = 1.00
         else:
-            format_q = 0.40
+            format_q = 0.30
 
-        # 6. Normalization Adjustment Signal
+        # 6. Normalization Adjustment Signal (w_N = 0.10)
         norm_q = 1.00
         review_reasons: List[str] = []
 
@@ -127,14 +144,14 @@ class QualityAssessor:
 
         norm_q = max(0.20, norm_q)
 
-        # 7. Ambiguity Penalty Signal (Multiple competing candidates in document)
+        # 7. Ambiguity Penalty Signal (w_A = 0.10)
         if candidate_count > 1:
             ambiguity_q = 0.60
             review_reasons.append(f"Multiple candidate values detected ({candidate_count} candidates found)")
         else:
             ambiguity_q = 1.00
 
-        # 8. Provenance Quality Signal
+        # 8. Provenance Quality Signal (w_P = 0.15)
         prov_q = 0.0
         if has_page:
             prov_q += 0.50
@@ -143,14 +160,14 @@ class QualityAssessor:
         if has_snippet:
             prov_q += 0.20
 
-        # 9. Weighted Composite Score Calculation
-        # Weights: source_quality (0.25), format_validity (0.25), label_match (0.20), normalization (0.15), ambiguity (0.15)
+        # 9. Weighted Composite Score Calculation (weights sum to 1.00)
         raw_score = (
-            0.25 * source_q +
-            0.25 * format_q +
+            0.20 * source_q +
             0.20 * label_q +
-            0.15 * norm_q +
-            0.15 * ambiguity_q
+            0.25 * format_q +
+            0.15 * prov_q +
+            0.10 * norm_q +
+            0.10 * ambiguity_q
         )
         quality_score = round(min(1.0, max(0.0, raw_score)), 2)
 
@@ -172,7 +189,6 @@ class QualityAssessor:
         elif candidate_count > 1:
             status = FieldStatus.NEEDS_REVIEW
         elif was_repaired:
-            # If characters were repaired, flag for review
             status = FieldStatus.NEEDS_REVIEW
         elif quality_score < HIGH_CONFIDENCE_THRESHOLD:
             status = FieldStatus.NEEDS_REVIEW
@@ -183,12 +199,20 @@ class QualityAssessor:
         # 11. Human-Readable Explanation
         explanation_parts = []
         if status == FieldStatus.EXTRACTED:
-            src_desc = "digital text" if extraction_method == "DIGITAL_TEXT" else f"OCR (confidence {source_q:.0%})"
+            if extraction_method == "DIGITAL_TEXT":
+                src_desc = "digital text stream"
+            elif has_token_level_confidence:
+                src_desc = f"OCR token confidence {source_q:.0%}"
+            else:
+                src_desc = f"OCR page confidence {source_q:.0%}"
             label_desc = "exact label" if is_exact_label else "supporting label" if has_label_match else "unlabelled pattern"
             explanation_parts.append(f"High evidence quality ({quality_score:.2f}): extracted via {src_desc} with {label_desc} and valid statutory format.")
         else:
             reasons_str = "; ".join(review_reasons) if review_reasons else "Quality score below threshold"
             explanation_parts.append(f"Needs review ({quality_score:.2f}): {reasons_str}.")
+
+        if used_page_fallback and extraction_method == "OCR":
+            explanation_parts.append("(Page-level OCR confidence fallback used; token-level data unavailable).")
 
         return QualityAssessment(
             quality_score=quality_score,

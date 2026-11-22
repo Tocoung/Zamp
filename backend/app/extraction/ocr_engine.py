@@ -25,13 +25,29 @@ MAX_TOTAL_CHARS = 50000
 
 
 @dataclass
+class OcrToken:
+    """Word-level OCR token with bounding box and confidence."""
+    text: str
+    confidence: float             # Normalized token confidence [0.0 - 1.0]
+    left: int = 0
+    top: int = 0
+    width: int = 0
+    height: int = 0
+    line_num: int = 0
+    word_num: int = 0
+    block_num: int = 0
+    par_num: int = 0
+
+
+@dataclass
 class OcrPageResult:
     """Recognized text content and metadata for an individual document page."""
     page_number: int              # 1-indexed original page
     text: str                     # Clean normalized text for the page
     extraction_method: str        # "DIGITAL_TEXT" or "OCR"
-    confidence: float             # Heuristic or OCR engine confidence [0.0 - 1.0]
+    confidence: float             # Heuristic or OCR engine page-level confidence [0.0 - 1.0]
     lines: List[str] = field(default_factory=list) # Extracted lines preserving order
+    tokens: List[OcrToken] = field(default_factory=list) # Word-level OCR tokens if available
 
 
 @dataclass
@@ -192,18 +208,46 @@ class OcrEngine:
             )
 
     def _ocr_image_object(self, img: "Image.Image", page_number: int) -> OcrPageResult:
-        """Runs Tesseract on a PIL Image and computes confidence."""
+        """Runs Tesseract on a PIL Image and captures word-level OCR tokens and bounding boxes."""
         raw_text = pytesseract.image_to_string(img) or ""
         clean_text = raw_text.strip()
         lines = [l.strip() for l in raw_text.splitlines() if l.strip()]
 
-        # Estimate average word confidence from Tesseract data
+        tokens: List[OcrToken] = []
+        confs: List[float] = []
+
         try:
             data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
-            confs = [float(c) for c in data.get("conf", []) if c != "-1" and float(c) >= 0]
+            n_boxes = len(data.get("text", []))
+            for i in range(n_boxes):
+                raw_token_text = str(data["text"][i] or "").strip()
+                raw_conf = data["conf"][i]
+                try:
+                    conf_val = float(raw_conf)
+                except (ValueError, TypeError):
+                    conf_val = -1.0
+
+                if conf_val >= 0 and raw_token_text:
+                    normalized_conf = round(min(1.0, max(0.0, conf_val / 100.0)), 3)
+                    confs.append(conf_val)
+                    tokens.append(
+                        OcrToken(
+                            text=raw_token_text,
+                            confidence=normalized_conf,
+                            left=int(data.get("left", [0])[i] if i < len(data.get("left", [])) else 0),
+                            top=int(data.get("top", [0])[i] if i < len(data.get("top", [])) else 0),
+                            width=int(data.get("width", [0])[i] if i < len(data.get("width", [])) else 0),
+                            height=int(data.get("height", [0])[i] if i < len(data.get("height", [])) else 0),
+                            line_num=int(data.get("line_num", [0])[i] if i < len(data.get("line_num", [])) else 0),
+                            word_num=int(data.get("word_num", [0])[i] if i < len(data.get("word_num", [])) else 0),
+                            block_num=int(data.get("block_num", [0])[i] if i < len(data.get("block_num", [])) else 0),
+                            par_num=int(data.get("par_num", [0])[i] if i < len(data.get("par_num", [])) else 0),
+                        )
+                    )
             avg_conf = (sum(confs) / len(confs) / 100.0) if confs else 0.85
             avg_conf = round(min(1.0, max(0.0, avg_conf)), 2)
-        except Exception:
+        except Exception as e:
+            logger.warning("Failed to parse token data from Tesseract: %s", type(e).__name__)
             avg_conf = 0.85
 
         return OcrPageResult(
@@ -212,6 +256,7 @@ class OcrEngine:
             extraction_method="OCR",
             confidence=avg_conf,
             lines=lines,
+            tokens=tokens,
         )
 
 

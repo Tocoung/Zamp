@@ -516,45 +516,58 @@ Deterministic rules extract canonical key-value fields for each document categor
 
 ---
 
-## 6. Extraction Confidence, Normalization & Evidence Inspection (Step 4)
+## 6. Extraction Confidence, Normalization & Evidence Hardening (Step 4 & 4.1)
 
-Phase 2, Step 4 strengthens the extraction foundation by providing explainable, signal-grounded confidence scores, a dedicated normalization layer, honest provenance integrity, and interactive original document page inspection.
+Phase 2, Steps 4 and 4.1 strengthen the extraction foundation by providing explainable, signal-grounded confidence scores, word-level OCR token confidence, calendar date validation, a dedicated normalization layer, honest provenance integrity, and interactive original document page inspection with preview safety hardening.
 
-### A. Explainable Quality Assessment (`app/extraction/confidence.py`)
+### A. Explainable Quality Assessment & Consistent Formula (`app/extraction/confidence.py`)
 - **Measured Signals (Zero Hardcoded Constants):** Field confidence is calculated from six concrete, verifiable signals:
-  1. `source_quality`: Base clarity of the underlying text recognition (`1.0` for digital PDF, `0.85` for OCR).
-  2. `label_match`: Exactness of the detected identifier header or keyword label (`0.70` - `1.0`).
-  3. `format_validity`: Conformance of the extracted value to statutory regex or structural rules (`1.0` valid, `0.20` malformed).
-  4. `normalization_adjustment`: Penalty applied if value required OCR error correction (e.g. `O` $\leftrightarrow$ `0`) or trimming.
-  5. `ambiguity_penalty`: Deductions if multiple competing candidates were found or date formats are ambiguous (`0.30` - `0.45` penalty).
-  6. `provenance_quality`: Completeness of document coordinates, page numbers, and verbatim evidence snippets (`1.0`).
-- **Composite Quality Score:** Weighted formula:
-  $$\text{Composite} = (0.20 \times \text{source}) + (0.25 \times \text{label}) + (0.30 \times \text{format}) + (0.15 \times \text{provenance}) + (0.10 \times \text{norm}) - \text{penalty}$$
+  1. `source_quality` ($w_S = 0.20$): Digital text stream baseline fidelity ($0.98$), word-level OCR token confidence ($0.30 - 0.95$), or page-level OCR fallback ($0.30 - 0.90$).
+  2. `label_match` ($w_L = 0.20$): Exact statutory identifier header ($1.00$), alias/supporting label ($0.85$), or unlabeled pattern match ($0.50$).
+  3. `format_validity` ($w_F = 0.25$): Valid statutory format conforming to field grammar ($1.00$), or malformed syntax ($0.30$).
+  4. `provenance_quality` ($w_P = 0.15$): Original page coordinate ($+0.50$), line location ($+0.30$), and verbatim evidence snippet ($+0.20$).
+  5. `normalization_adjustment` ($w_N = 0.10$): Starts at $1.00$ minus penalties ($-0.50$ for ambiguous date, $-0.20$ for OCR character confusion repairs).
+  6. `ambiguity_penalty` ($w_A = 0.10$): Single candidate in document ($1.00$), or multiple competing candidates ($0.60$).
+- **Internally Consistent Composite Score Formula (Weights Sum to 1.00):**
+  $$\text{Composite Score} = (0.25 \times \text{format}) + (0.20 \times \text{source}) + (0.20 \times \text{label}) + (0.15 \times \text{provenance}) + (0.10 \times \text{norm}) + (0.10 \times \text{ambiguity})$$
+  *(Note: Weights strictly sum to $0.25 + 0.20 + 0.20 + 0.15 + 0.10 + 0.10 = 1.00$)*
+- **Worked Examples:**
+  - *Digital PDF GSTIN (Clear text, exact label, valid format, full provenance):*
+    $\text{Score} = (0.25 \times 1.0) + (0.20 \times 0.98) + (0.20 \times 1.0) + (0.15 \times 1.0) + (0.10 \times 1.0) + (0.10 \times 1.0) = 0.996 \approx 1.00 \to \text{EXTRACTED}$.
+  - *Scanned OCR GSTIN (Word-token confidence 0.65, valid format, full provenance):*
+    $\text{Score} = (0.25 \times 1.0) + (0.20 \times 0.65) + (0.20 \times 1.0) + (0.15 \times 1.0) + (0.10 \times 1.0) + (0.10 \times 1.0) = 0.930 \to \text{EXTRACTED}$.
+  - *OCR Scan with Character Repair (`O` $\to$ `0`, norm = 0.80, token conf 0.50):*
+    $\text{Score} = (0.25 \times 1.0) + (0.20 \times 0.50) + (0.20 \times 1.0) + (0.15 \times 1.0) + (0.10 \times 0.80) + (0.10 \times 1.0) = 0.880 \to \text{NEEDS\_REVIEW}$ *(flagged due to character repair)*.
+  - *Ambiguous Date (`03/04/2024`, norm = 0.50, digital text):*
+    $\text{Score} = (0.25 \times 1.0) + (0.20 \times 0.98) + (0.20 \times 1.0) + (0.15 \times 1.0) + (0.10 \times 0.50) + (0.10 \times 1.0) = 0.946 \approx 0.95 \to \text{NEEDS\_REVIEW}$ *(flagged due to ambiguity)*.
 - **Presentation Disclaimer:** Explicitly documented as **"Extraction Quality Score"** or **"Evidence Quality"** measuring signal alignment and format validity—**never** labeled as a statistical probability of document authenticity or external legal validity.
 - **Explainable Thresholds:**
   - $\ge 0.75$: `EXTRACTED` (High confidence).
   - $< 0.75$: `NEEDS_REVIEW` (Human review recommended with documented rationale).
 
-### B. Distinct 4-State Field Status Model
-1. **`EXTRACTED`:** Field located with high confidence ($\ge 0.75$), passing statutory format checks with clear evidence snippet.
-2. **`NEEDS_REVIEW`:** Field detected but confidence $< 0.75$, format validation failed, OCR character repair was applied, or date format is ambiguous.
-3. **`MISSING`:** Field was not detected in document content (`value=None`, `source=None`, `page_number=None`).
-4. **`UNREADABLE`:** Region detected with relevant labels, but content was garbled or below OCR confidence threshold (`limitation_or_reason="IMAGE_RESOLUTION_LOW"` or `"OCR_TEXT_GARBLED"`). Retains page number and region for human triage.
+### B. Field-Level OCR Confidence (`app/extraction/ocr_engine.py`)
+- **Word-Level Token Capture:** Captures Tesseract `image_to_data` word-level tokens (`OcrToken` with bounding boxes, confidence `[0.0 - 1.0]`, line/word numbers).
+- **Token Association:** Matches extracted candidate values and labels to their constituent word tokens. Separate fields on the same page evaluate with their distinct token confidences.
+- **Page-Level Fallback:** When token data is missing, falls back to whole-page average confidence and explicitly appends `(Page-level OCR confidence fallback used; token-level data unavailable)` to the explanation.
+- **Digital Text Stream Preservation:** Digital PDFs retain digital text stream fidelity ($0.98$) without inventing OCR tokens.
+- **API Privacy:** Zero raw OCR tokens or internal bounding box coordinates are persisted in the database or exposed via public APIs.
 
-### C. Canonical Normalization Layer (`app/extraction/normalization.py`)
+### C. Canonical Normalization & Real Calendar Date Validation (`app/extraction/normalization.py`)
+- **Real Calendar Date Validation:** All date parsing branches validate real calendar dates using `datetime.date(year, month, day)`. Non-existent dates like `31/04/2024` (April has 30 days) and non-leap-year `29/02/2023` fail validation (`is_valid_format = False`) with clear error notes.
+- **Leap Year and ISO Handling:** Correctly accepts leap year `29/02/2024` $\to$ `2024-02-29`, identical day/month `05/05/2024` $\to$ `2024-05-05`, and valid ISO dates.
+- **Date Ambiguity Protection:** Detects numeric slash dates (e.g. `03/04/2024` where month/day cannot be resolved without guessing) and sets `NEEDS_REVIEW` without guessing.
 - **GSTIN Normalization (`normalize_gstin`):** Enforces 15-character statutory format. Tracks OCR character repairs (`O` $\leftrightarrow$ `0`, `I` $\leftrightarrow$ `1`), notes changes, and applies a confidence penalty.
-- **Date Normalization (`normalize_date`):** Standardizes valid dates into ISO 8601 (`YYYY-MM-DD`). Detects ambiguous slash dates (e.g. `03/04/2024` where day/month cannot be resolved without guessing) and sets `NEEDS_REVIEW` without fabricating assumptions.
 - **Legal Entity Names (`normalize_entity_name`):** Cleans excess whitespace while strictly preserving statutory corporate suffixes (`Pvt Ltd`, `LLC`, `Corp`, `Inc`) without aggressive title-casing.
 - **Addresses (`normalize_address`):** Reconnects hyphenated line breaks (`Indus-\ntrial` $\to$ `Industrial`) and standardizes spacing.
 - **Bank Identifiers (`normalize_ifsc`, `normalize_account_number`):** Normalizes 11-char IFSC codes and masks account numbers (`****1234`) with zero raw PII leaks.
 
-### D. Original Page Preview & Evidence Inspection Modal
-- **Dynamic On-Demand Page Rendering (`GET /pages/{page}/preview`):** Renders the requested document page in memory via `pdf2image` (`pdftoppm`) as a PNG stream with `Cache-Control: private, no-store`. Zero permanent disk plaintext.
-- **Access Control:** Validates document and vendor relationship; cross-vendor access is rejected with `HTTP 404`.
-- **Interactive UI Modal:**
-  - High-resolution document canvas with multi-page navigation controls.
-  - Evidence inspection side panel showing normalized value, status badge, quality percentage, signal breakdown, and verbatim evidence quote.
-  - **Evidence-Only Non-Mutation Principle:** Disclaims that extraction is structured evidence gathering only and never mutates vendor data or alters approval decisions.
+### D. Hardened Original Page Preview & Evidence Inspection Modal
+- **Pillow Bounded Validation (`GET /pages/{page}/preview`):** Images are validated with Pillow (`verify()`) to reject malformed bytes before rendering.
+- **Dimension & Decompression Bomb Protection:** Enforces maximum bounds of $4096\text{px}$ width/height and $16\text{MP}$ total pixels (`Image.MAX_IMAGE_PIXELS = 16_000_000`). Traps `DecompressionBombError` and `DecompressionBombWarning`, returning HTTP 400.
+- **Safe In-Memory Normalization:** Converts palette/CMYK images to RGB/RGBA and encodes to a normalized safe in-memory PNG stream. Zero plaintext on disk.
+- **Security Headers:** Enforces `Cache-Control: private, no-store, max-age=0` and `X-Content-Type-Options: nosniff`.
+- **Access Control & Page Bounds:** Validates document and vendor relationship; cross-vendor access is rejected with `HTTP 404`, and invalid page numbers (`page_number != 1` for single-image files) return `HTTP 400`.
+- **Interactive UI Modal:** Multi-page canvas navigation, evidence snippet citation, and quality breakdown with non-mutation disclaimer.
 
 ---
 
@@ -571,9 +584,24 @@ Phase 2, Step 4 strengthens the extraction foundation by providing explainable, 
 ```bash
 PYTHONPATH=backend backend/.venv/bin/pytest backend/tests/ -v
 ```
-**Result:** **201 passed in 5.12s** (Exit code: `0`).
+**Result:** **220 passed** (Exit code: `0`).
 
 Includes complete coverage across:
+- `test_step4_1_hardening.py`: 19 automated tests validating field-level OCR confidence, token-to-field association, distinct confidences for two fields on the same OCR page, composite score weights summing to 1.00 with provenance included, calendar date validation (`31/04/2024`, `29/02/2023`, `29/02/2024`, `05/05/2024`, `03/04/2024`), image preview Pillow bounds checking, malformed image rejection, oversized dimension rejection, decompression bomb protection, and page boundaries.
+- `test_user_scenarios.py`: 6 automated end-to-end scenario tests directly validating high-confidence extraction, distorted low-confidence scans, ambiguous date non-guessing, missing vs unreadable distinction, original page preview streaming, and zero profile/decision overwrite.
+- `test_extraction_quality.py`: 20 tests covering normalization (GSTIN, dates, names, addresses, IFSC, account masking), date ambiguity detection without guessing, OCR character repair penalties, unreadable field classification, signal breakdown calculation, explainable thresholds, deterministic reproducibility, and authenticated page preview API streaming.
+- `test_extraction.py`: 7 comprehensive extraction tests (digital PDF extraction, scanned PDF OCR rendering, image OCR recognition, missing field determinism, field-level provenance tracking, account number masking, cascade deletion, and vendor decision preservation).
+- `test_classification.py`: 17 comprehensive classification tests (digital PDF text extraction, empty/scanned PDF handling, image file rejection without OCR, incorporation/tax/bank/address rule scoring, ambiguous and conflicting signals, filename-only bounds, classify/get/history endpoints, cross-vendor isolation, and proof that vendor compliance status is unmutated).
+- `test_documents.py`: 30 tests covering intake validation, bounded chunked streaming, 10MB exact boundary and 1-byte overflow checks, path traversal and symlink rejection, sanitized error messages, two-phase staged deletion failure handling, database rollback recovery, and idempotent missing file deletion.
+- `test_end_to_end_lifecycle.py`: 5 comprehensive lifecycle tests (Submission $\to$ Persistence $\to$ Validation $\to$ Decision $\to$ Status Update $\to$ History $\to$ Correction $\to$ Re-evaluation).
+- `test_decision_api.py`: 13 integration tests for decision routes, transactional integrity, and explainability.
+- `test_decision_engine.py`: 31 tests covering policy mapping, registry coverage, and action thresholds.
+- `test_validation_rules.py`: 18 tests for country-specific statutory formats and consistency.
+- `test_validation_engine.py`: 6 tests for engine orchestration and finding aggregation.
+- `test_validation_api.py`: 5 tests for validation endpoints.
+- `test_security_and_reliability.py`: 15 tests for Fernet encryption, key rotation, and migration.
+- `test_vendors.py`: 10 tests for intake validation, persistence, and account masking.
+- `test_health.py` & `test_config.py`: 12 tests for operational health probes and environment config.
 - `test_user_scenarios.py`: 6 automated end-to-end scenario tests directly validating high-confidence extraction, distorted low-confidence scans, ambiguous date non-guessing, missing vs unreadable distinction, original page preview streaming, and zero profile/decision overwrite.
 - `test_extraction_quality.py`: 20 new tests covering normalization (GSTIN, dates, names, addresses, IFSC, account masking), date ambiguity detection without guessing, OCR character repair penalties, unreadable field classification, signal breakdown calculation, explainable thresholds, deterministic reproducibility, and authenticated page preview API streaming.
 - `test_extraction.py`: 7 comprehensive extraction tests (digital PDF extraction, scanned PDF OCR rendering, image OCR recognition, missing field determinism, field-level provenance tracking, account number masking, cascade deletion, and vendor decision preservation).
