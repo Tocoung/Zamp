@@ -70,11 +70,23 @@ class VendorDocument(Base):
         order_by="desc(DocumentClassification.created_at)",
         lazy="selectin",
     )
+    extractions = relationship(
+        "DocumentExtraction",
+        back_populates="document",
+        cascade="all, delete-orphan",
+        order_by="desc(DocumentExtraction.created_at)",
+        lazy="selectin",
+    )
 
     @property
     def latest_classification(self):
         """Returns the most recent classification record for this document, if any."""
         return self.classifications[0] if self.classifications else None
+
+    @property
+    def latest_extraction(self):
+        """Returns the most recent extraction record for this document, if any."""
+        return self.extractions[0] if self.extractions else None
 
     __table_args__ = (
         Index("ix_documents_vendor_category", "vendor_id", "document_category"),

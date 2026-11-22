@@ -1,8 +1,8 @@
 # Zamp — AI-Powered Vendor Onboarding Automation
 
 > **Case Study:** Zamp AI Solutions Analyst Case Study  
-> **Phase:** 2 (Step 2 — Document Classification Engine & Explainability)  
-> **Status:** Fully Integrated, Hardened, Tested, and Verified (162 Automated Tests Passing)  
+> **Phase:** 2 (Step 3 — OCR & Structured Information Extraction)  
+> **Status:** Fully Integrated, Tested, and Verified (175 Automated Tests Passing)  
 
 An automated platform designed to streamline vendor company onboarding, compliance document intake & secure storage, multi-source verification, deterministic validation, explainable decisioning (`APPROVED` / `PENDING` / `REJECTED`), lifecycle activity tracking, and human-in-the-loop review.
 
@@ -12,15 +12,17 @@ An automated platform designed to streamline vendor company onboarding, complian
 
 The project uses a clean **Modular Monolith** architecture with decoupled presentation, validation, decision, document storage, activity, and service layers:
 
-- **Frontend:** React 18 + TypeScript + Vite + Tailwind CSS + Lucide React (Vendor intake form, vendor directory, full profile inspection, decision explanation, in-modal edit/correction mode, chronological activity timeline, and supporting documents intake manager)
-- **Backend:** Python 3.9+ + FastAPI + Pydantic v2 + Uvicorn + Cryptography (Fernet authenticated encryption at rest)
-- **Document Intake & Secure Storage:** Dedicated storage service (`backend/app/core/storage.py`) and validator (`backend/app/core/document_validator.py`) enforcing magic-byte inspection, atomic `.tmp` writes, path traversal prevention, authenticated symmetric encryption at rest (Fernet AES-128-CBC + HMAC-SHA256), and SHA-256 integrity checksums.
+- **Frontend:** React 18 + TypeScript + Vite + Tailwind CSS + Lucide React (Vendor intake form, vendor directory, full profile inspection, decision explanation, in-modal edit/correction mode, chronological activity timeline, supporting documents manager, document classifier, and structured extraction drawer with field provenance)
+- **Backend:** Python 3.9+ + FastAPI + Pydantic v2 + Uvicorn + Cryptography (Fernet authenticated encryption at rest) + Tesseract OCR + Poppler + Pypdf
+- **Document Intake & Secure Storage:** Dedicated storage service (`backend/app/core/storage.py`) and validator (`backend/app/core/document_validator.py`) enforcing magic-byte inspection, bounded chunked streaming, atomic `.tmp` writes, path traversal prevention, authenticated symmetric encryption at rest (Fernet AES-128-CBC + HMAC-SHA256), and SHA-256 integrity checksums.
+- **Document Classification Engine:** Explainable rule-based categorization (`backend/app/classification/`) identifying document types (`TAX_CERTIFICATE`, `BANK_PROOF`, etc.) with transparent heuristic match scores and limitation codes.
+- **OCR & Structured Extraction Pipeline:** End-to-end multi-format text recognition and field extraction (`backend/app/extraction/`) supporting digital PDFs, scanned PDFs (rasterized page rendering + OCR), and standalone images (PNG/JPEG) with field-level provenance and PII masking.
 - **Validation Engine:** Modular, decoupled rule engine (`backend/app/validation/`) evaluating 28 deterministic rules across required fields, country-aware statutory formats, and cross-field consistency.
 - **Decision Engine:** Deterministic business policy and explainability engine (`backend/app/decision/`) assigning `APPROVED`, `PENDING`, or `REJECTED` outcomes with stable reason codes and actionable recommendations.
-- **Activity & Lifecycle History:** Dedicated `vendor_activities` table tracking discrete lifecycle events (`VENDOR_SUBMITTED`, `DECISION_EXECUTED`, `VENDOR_UPDATED`, `DECISION_REEVALUATED`, `DOCUMENT_UPLOADED`, `DOCUMENT_DELETED`) in deterministic chronological order with zero sensitive financial data leakage.
+- **Activity & Lifecycle History:** Dedicated `vendor_activities` table tracking discrete lifecycle events (`VENDOR_SUBMITTED`, `DECISION_EXECUTED`, `VENDOR_UPDATED`, `DECISION_REEVALUATED`, `DOCUMENT_UPLOADED`, `DOCUMENT_DELETED`, `DOCUMENT_CLASSIFIED`, `DOCUMENT_EXTRACTED`) in deterministic chronological order with zero sensitive financial data leakage.
 - **Persistence:** SQLAlchemy 2.0 (Active: SQLite with deterministic path resolution; Production interface: PostgreSQL via `DATABASE_URL` with driver).
-- **Audit History:** Dedicated `vendor_decisions` and `vendor_documents` tables preserving immutable audit records transactionally.
-- **Testing:** Pytest + FastAPI TestClient with temporary isolated SQLite databases and isolated storage directories (**133 automated tests passing**).
+- **Audit History:** Dedicated `vendor_decisions`, `vendor_documents`, `document_classifications`, and `document_extractions` tables preserving immutable audit records transactionally.
+- **Testing:** Pytest + FastAPI TestClient with temporary isolated SQLite databases and isolated storage directories (**175 automated tests passing**).
 
 Detailed architectural boundaries and module roadmaps can be found in [docs/architecture.md](docs/architecture.md).
 
@@ -477,6 +479,42 @@ Classifications are stored transactionally in `document_classifications` table a
 
 ---
 
+## 5. OCR & Structured Information Extraction Pipeline (Step 3)
+
+Phase 2, Step 3 implements an end-to-end OCR and structured field extraction engine supporting digital PDFs, scanned/rasterized PDFs, and standalone images (PNG/JPEG) with field-level provenance and sensitive financial data masking.
+
+### A. Multi-Format Text Recognition Engine (`app/extraction/ocr_engine.py`)
+- **Digital PDF Extraction:** Directly extracts embedded text streams page-by-page via `pypdf`.
+- **Scanned PDF Rendering & OCR:** For scanned or rasterized PDFs with insufficient digital text, renders pages to images via `pdf2image` (`pdftoppm`) at up to 2500px resolution and extracts text using local Tesseract OCR (`pytesseract`).
+- **Image Recognition:** Directly processes PNG and JPEG files using local Tesseract OCR with automatic image normalization.
+- **Bounded Resource Limits:** Enforces hard caps on pages (`MAX_PAGES_LIMIT = 10`), rendering resolution, per-page character lengths, and total document text to prevent resource exhaustion.
+
+### B. Category-Specific Field Extraction (`app/extraction/parsers.py`)
+Deterministic rules extract canonical key-value fields for each document category:
+1. **`TAX_CERTIFICATE`:** `gstin`, `legal_entity_name`, `registration_date`, `registered_address`, `taxpayer_type`.
+2. **`BANK_PROOF`:** `bank_name`, `account_holder_name`, `account_number`, `ifsc_code`, `routing_number`, `account_type`.
+3. **`CERTIFICATE_OF_INCORPORATION`:** `company_name`, `cin_or_reg_number`, `incorporation_date`, `registered_jurisdiction`.
+4. **`ADDRESS_PROOF`:** `resident_or_entity_name`, `full_address`, `issue_date`, `document_type`.
+5. **`OTHER`:** Dynamic fallback extracting detected key-value identifiers.
+
+### C. Field-Level Provenance & Sensitive Data Protection
+- **Field Provenance:** Every extracted field records its source:
+  - `page_number`: Original 1-indexed page where field was located.
+  - `extraction_method`: `DIGITAL_TEXT` vs `OCR`.
+  - `evidence_location`: Exact location (e.g. `Page 1, Line 3`).
+  - `evidence_snippet`: Verbatim quotation snippet of the source document text.
+- **PII & Financial Protection:** Sensitive account numbers are masked by default (`masked_value = "**********7890"`), preventing exposure in UI drawers, API responses, and activity logs.
+- **Missing Field Determinism (Zero Hallucination):** If an expected field is absent (e.g. registration date or address omitted), the engine marks the field as `MISSING` (`value=None`) with reason `"Field not detected in document content."`. It never invents placeholder values.
+- **Lifecycle Cascade:** Extractions are linked via `ON DELETE CASCADE` to `vendor_documents`. Deleting a document physically removes the file and cascades extraction record cleanup.
+
+### D. REST API Endpoints
+- `POST /api/v1/vendors/{vendor_id}/documents/{document_id}/extract`: Triggers OCR/extraction and persists result.
+- `GET /api/v1/vendors/{vendor_id}/documents/{document_id}/extraction`: Returns latest extraction and field provenance.
+- `GET /api/v1/vendors/{vendor_id}/documents/{document_id}/extraction-history`: Returns extraction audit history.
+- `GET /api/v1/vendors/{vendor_id}/extractions`: Returns extractions across all vendor documents.
+
+---
+
 ## 10. Health & Readiness Probes
 
 - **`GET /healthz` (Liveness):** Process check (`200 OK`, `{"status": "alive"}`).
@@ -490,9 +528,10 @@ Classifications are stored transactionally in `document_classifications` table a
 ```bash
 PYTHONPATH=backend backend/.venv/bin/pytest backend/tests/ -v
 ```
-**Result:** **162 passed in 1.91s** (Exit code: `0`).
+**Result:** **175 passed in 3.22s** (Exit code: `0`).
 
 Includes complete coverage across:
+- `test_extraction.py`: 7 comprehensive extraction tests (digital PDF extraction, scanned PDF OCR rendering, image OCR recognition, missing field determinism, field-level provenance tracking, account number masking, cascade deletion, and vendor decision preservation).
 - `test_classification.py`: 17 comprehensive classification tests (digital PDF text extraction, empty/scanned PDF handling, image file rejection without OCR, incorporation/tax/bank/address rule scoring, ambiguous and conflicting signals, filename-only bounds, classify/get/history endpoints, cross-vendor isolation, and proof that vendor compliance status is unmutated).
 - `test_documents.py`: 30 tests covering intake validation, bounded chunked streaming, 10MB exact boundary and 1-byte overflow checks, path traversal and symlink rejection, sanitized error messages, two-phase staged deletion failure handling, database rollback recovery, and idempotent missing file deletion.
 - `test_end_to_end_lifecycle.py`: 5 comprehensive lifecycle tests (Submission $\to$ Persistence $\to$ Validation $\to$ Decision $\to$ Status Update $\to$ History $\to$ Correction $\to$ Re-evaluation).
@@ -507,17 +546,17 @@ Includes complete coverage across:
 
 ### Frontend Development & Build
 ```bash
-npm --prefix frontend run dev
+npm --prefix frontend run build
 ```
-**Result:** Fast HMR and live compilation with Vite v5.4.21.
+**Result:** TypeScript validation passes cleanly (0 errors), esbuild bundles in ~140ms.
 
 ---
 
-## 12. Scope Boundaries & Deferred Capabilities (Beyond Phase 2, Step 2)
+## 12. Scope Boundaries & Deferred Capabilities (Beyond Phase 2, Step 3)
 
-In strict adherence to Phase 2, Step 2 boundaries, the following advanced capabilities are deliberately deferred to subsequent steps:
-- **Optical Character Recognition (OCR):** Scanned image OCR models (e.g. Tesseract / Google Cloud Vision) for extracting text from flat image-only documents (Planned: Phase 2, Step 3).
-- **Structured Field Extraction:** Extracting key-value fields such as Tax IDs, bank account numbers, or incorporation dates from document text (Planned: Phase 2, Step 3).
-- **Cross-Document Verification:** Automated consistency cross-checks between document fields and vendor form fields (Planned: Phase 2, Step 3).
-- **Automated Document-Driven Compliance Decisioning:** Directly altering vendor approval status based on document contents (Planned: Phase 2, Step 3).
+In strict adherence to Phase 2, Step 3 boundaries, the following advanced capabilities are deliberately deferred to subsequent steps:
+- **Cross-Document Consistency Validation:** Automated reconciliation between document-extracted fields and vendor form fields (e.g. matching legal entity name on tax certificate vs bank statement vs web form) (Planned: Phase 2, Step 4).
+- **Discrepancy Detection & Highlighting:** Generating cross-document discrepancy flags and confidence scores for human reviewer triage (Planned: Phase 2, Step 4).
+- **Automated Document-Driven Compliance Decisioning:** Directly altering vendor approval status based on document contents (Planned: Phase 2, Step 4).
+- **External Authority Registries:** Independent real-time lookups against GSTIN, IRS, or MCA portals (Planned: Phase 3).
 - **Human-in-the-Loop Review Queues:** Dedicated exception triage and manual document approval workflows (Planned: Phase 3).

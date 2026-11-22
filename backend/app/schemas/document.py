@@ -5,6 +5,7 @@ from enum import Enum
 from typing import List, Optional
 from pydantic import BaseModel, ConfigDict, Field
 from app.schemas.classification import DocumentClassificationResponse
+from app.schemas.extraction import DocumentExtractionResponse
 
 
 class DocumentCategory(str, Enum):
@@ -39,6 +40,7 @@ class VendorDocumentResponse(BaseModel):
     upload_status: str = Field(..., examples=["UPLOADED"])
     document_version: int = Field(..., examples=[1])
     latest_classification: Optional[DocumentClassificationResponse] = None
+    latest_extraction: Optional[DocumentExtractionResponse] = None
     created_at: datetime
     updated_at: datetime
 

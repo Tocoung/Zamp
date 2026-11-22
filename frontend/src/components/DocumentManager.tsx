@@ -16,16 +16,20 @@ import {
   ChevronRight,
   AlertTriangle,
   Info,
+  FileSearch,
 } from 'lucide-react';
 import {
   VendorDocumentResponse,
   DocumentCategory,
   ClassificationStatus,
+  ExtractionStatus,
+  FieldStatus,
   fetchVendorDocuments,
   uploadVendorDocument,
   downloadVendorDocument,
   deleteVendorDocument,
   classifyVendorDocument,
+  extractVendorDocument,
 } from '../config/api';
 
 interface DocumentManagerProps {
@@ -65,6 +69,8 @@ export const DocumentManager: React.FC<DocumentManagerProps> = ({
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [classifyingId, setClassifyingId] = useState<string | null>(null);
   const [expandedClassificationId, setExpandedClassificationId] = useState<string | null>(null);
+  const [extractingId, setExtractingId] = useState<string | null>(null);
+  const [expandedExtractionId, setExpandedExtractionId] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -153,6 +159,9 @@ export const DocumentManager: React.FC<DocumentManagerProps> = ({
       if (expandedClassificationId === doc.id) {
         setExpandedClassificationId(null);
       }
+      if (expandedExtractionId === doc.id) {
+        setExpandedExtractionId(null);
+      }
       await loadDocuments();
       if (onActivityChange) onActivityChange();
     } catch (err: any) {
@@ -180,6 +189,27 @@ export const DocumentManager: React.FC<DocumentManagerProps> = ({
       setErrorMessage(err.message || 'Failed to classify document');
     } finally {
       setClassifyingId(null);
+    }
+  };
+
+  const handleExtract = async (doc: VendorDocumentResponse) => {
+    setExtractingId(doc.id);
+    setErrorMessage(null);
+    setSuccessMessage(null);
+    try {
+      const result = await extractVendorDocument(vendorId, doc.id);
+      setDocuments((prev) =>
+        prev.map((d) => (d.id === doc.id ? { ...d, latest_extraction: result } : d))
+      );
+      setExpandedExtractionId(doc.id);
+      setSuccessMessage(
+        `Structured extraction complete for '${doc.original_filename}': ${result.status} (${result.extracted_fields_count} fields extracted)`
+      );
+      if (onActivityChange) onActivityChange();
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Failed to extract document information');
+    } finally {
+      setExtractingId(null);
     }
   };
 
@@ -252,6 +282,79 @@ export const DocumentManager: React.FC<DocumentManagerProps> = ({
       default:
         return null;
     }
+  };
+
+  const getExtractionStatusBadge = (status: ExtractionStatus) => {
+    switch (status) {
+      case 'COMPLETED':
+        return (
+          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+            <CheckCircle2 className="w-2.5 h-2.5 text-emerald-600" />
+            Completed
+          </span>
+        );
+      case 'PARTIAL':
+        return (
+          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-50 text-amber-700 border border-amber-200">
+            <AlertTriangle className="w-2.5 h-2.5 text-amber-600" />
+            Partial
+          </span>
+        );
+      case 'INSUFFICIENT_TEXT':
+        return (
+          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-slate-100 text-slate-600 border border-slate-300">
+            <Info className="w-2.5 h-2.5 text-slate-500" />
+            Insufficient Text
+          </span>
+        );
+      case 'FAILED':
+        return (
+          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-rose-50 text-rose-700 border border-rose-200">
+            <AlertCircle className="w-2.5 h-2.5 text-rose-600" />
+            Failed
+          </span>
+        );
+      default:
+        return null;
+    }
+  };
+
+  const getFieldStatusBadge = (status: FieldStatus) => {
+    switch (status) {
+      case 'EXTRACTED':
+        return (
+          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+            Extracted
+          </span>
+        );
+      case 'MISSING':
+        return (
+          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-semibold bg-slate-100 text-slate-500 border border-slate-200">
+            Missing
+          </span>
+        );
+      case 'UNREADABLE':
+        return (
+          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-semibold bg-rose-50 text-rose-700 border border-rose-200">
+            Unreadable
+          </span>
+        );
+      case 'NEEDS_REVIEW':
+        return (
+          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-semibold bg-amber-50 text-amber-700 border border-amber-200">
+            Needs Review
+          </span>
+        );
+      default:
+        return null;
+    }
+  };
+
+  const formatFieldName = (name: string): string => {
+    return name
+      .split('_')
+      .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+      .join(' ');
   };
 
   const getFileIcon = (mimeType: string) => {
@@ -403,6 +506,9 @@ export const DocumentManager: React.FC<DocumentManagerProps> = ({
                 <th scope="col" className="px-3 py-2.5">
                   Classification & Evidence
                 </th>
+                <th scope="col" className="px-3 py-2.5">
+                  Structured Information
+                </th>
                 <th scope="col" className="px-3 py-2.5 text-right">
                   Actions
                 </th>
@@ -411,8 +517,11 @@ export const DocumentManager: React.FC<DocumentManagerProps> = ({
             <tbody className="divide-y divide-slate-100">
               {documents.map((doc) => {
                 const cls = doc.latest_classification;
+                const ext = doc.latest_extraction;
                 const isExpanded = expandedClassificationId === doc.id;
+                const isExtractionExpanded = expandedExtractionId === doc.id;
                 const isClassifying = classifyingId === doc.id;
+                const isExtracting = extractingId === doc.id;
 
                 return (
                   <React.Fragment key={doc.id}>
@@ -505,8 +614,61 @@ export const DocumentManager: React.FC<DocumentManagerProps> = ({
                         )}
                       </td>
 
+                      {/* Structured Information */}
+                      <td className="px-3 py-2.5 align-top">
+                        {ext ? (
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              {getExtractionStatusBadge(ext.status)}
+                              <span className="text-[10px] font-mono text-slate-600 bg-slate-100 px-1 py-0.2 rounded border border-slate-200">
+                                {ext.extracted_fields_count} {ext.extracted_fields_count === 1 ? 'field' : 'fields'}
+                              </span>
+                            </div>
+                            <div>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setExpandedExtractionId(isExtractionExpanded ? null : doc.id)
+                                }
+                                className="inline-flex items-center gap-1 text-[10px] font-medium text-indigo-600 hover:text-indigo-800 hover:underline pt-0.5"
+                              >
+                                {isExtractionExpanded ? (
+                                  <>
+                                    <ChevronDown className="w-3 h-3" />
+                                    <span>Hide Fields</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <ChevronRight className="w-3 h-3" />
+                                    <span>View Fields ({ext.extracted_fields_count})</span>
+                                  </>
+                                )}
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-1.5 text-slate-400 text-[11px] py-0.5">
+                            <span className="italic">Not extracted yet</span>
+                          </div>
+                        )}
+                      </td>
+
                       {/* Actions */}
                       <td className="px-3 py-2.5 whitespace-nowrap text-right align-top space-x-1.5">
+                        <button
+                          type="button"
+                          onClick={() => handleExtract(doc)}
+                          disabled={isExtracting}
+                          className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 transition-colors disabled:opacity-50"
+                          title="Run OCR and extract structured field values"
+                        >
+                          {isExtracting ? (
+                            <Loader2 className="w-3 h-3 animate-spin text-indigo-600" />
+                          ) : (
+                            <FileSearch className="w-3 h-3 text-indigo-600" />
+                          )}
+                          <span>{ext ? 'Re-extract' : 'Extract'}</span>
+                        </button>
                         <button
                           type="button"
                           onClick={() => handleClassify(doc)}
@@ -555,7 +717,7 @@ export const DocumentManager: React.FC<DocumentManagerProps> = ({
                     {/* Expandable Evidence Drawer */}
                     {isExpanded && cls && (
                       <tr className="bg-slate-50/70 border-t border-slate-100">
-                        <td colSpan={4} className="px-4 py-3">
+                        <td colSpan={5} className="px-4 py-3">
                           <div className="space-y-2.5 max-w-3xl">
                             {/* Evidence Header */}
                             <div className="flex items-center justify-between text-[11px] border-b border-slate-200/70 pb-1.5">
@@ -639,6 +801,113 @@ export const DocumentManager: React.FC<DocumentManagerProps> = ({
                               <span className="italic">
                                 Deterministic dictionary signals only. No raw document text or sensitive identifiers exposed.
                               </span>
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                    {/* Expandable Extraction Drawer */}
+                    {isExtractionExpanded && ext && (
+                      <tr className="bg-indigo-50/30 border-t border-indigo-100">
+                        <td colSpan={5} className="px-4 py-3">
+                          <div className="space-y-3 max-w-4xl">
+                            <div className="flex items-center justify-between text-[11px] border-b border-indigo-200/70 pb-1.5">
+                              <span className="font-semibold text-indigo-900 flex items-center gap-1.5">
+                                <FileSearch className="w-3.5 h-3.5 text-indigo-600" />
+                                Structured Information & Provenance (Schema: {CATEGORY_LABELS[ext.document_category_used as DocumentCategory] || ext.document_category_used} • OCR Engine v{ext.ocr_engine_version})
+                              </span>
+                              <span className="text-slate-400 font-mono text-[10px]">
+                                {new Date(ext.extracted_at).toLocaleString()}
+                              </span>
+                            </div>
+
+                            {/* Limitation notice if any */}
+                            {ext.limitation_reason && (
+                              <div className="p-2 rounded bg-amber-50 border border-amber-200 text-amber-800 text-[11px] flex items-start gap-1.5">
+                                <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
+                                <div>
+                                  <span className="font-semibold">{ext.limitation_code || 'Notice'}:</span> {ext.limitation_reason}
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Fields Table */}
+                            <div className="bg-white rounded border border-slate-200 overflow-hidden shadow-xs">
+                              <table className="min-w-full divide-y divide-slate-100 text-left text-xs">
+                                <thead className="bg-slate-50 text-slate-500 font-medium text-[10px] uppercase tracking-wider">
+                                  <tr>
+                                    <th className="px-3 py-2">Field</th>
+                                    <th className="px-3 py-2">Extracted Value</th>
+                                    <th className="px-3 py-2">Status</th>
+                                    <th className="px-3 py-2">Provenance & Evidence</th>
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-slate-100 font-normal">
+                                  {Object.entries(ext.fields).map(([fieldName, field]) => (
+                                    <tr key={fieldName} className="hover:bg-slate-50/50">
+                                      <td className="px-3 py-2 align-top font-medium text-slate-800 text-xs whitespace-nowrap">
+                                        {formatFieldName(fieldName)}
+                                      </td>
+                                      <td className="px-3 py-2 align-top text-xs">
+                                        {field.status === 'EXTRACTED' ? (
+                                          <div className="flex items-center gap-1.5">
+                                            <span className="font-mono text-slate-900 font-medium select-all">
+                                              {field.masked_value || field.value}
+                                            </span>
+                                            {field.confidence !== undefined && field.confidence !== null && (
+                                              <span className="text-[10px] text-slate-400 font-mono">
+                                                ({Math.round(field.confidence * 100)}%)
+                                              </span>
+                                            )}
+                                          </div>
+                                        ) : (
+                                          <span className="text-slate-400 italic text-[11px]">
+                                            {field.limitation_or_reason || 'Not available'}
+                                          </span>
+                                        )}
+                                      </td>
+                                      <td className="px-3 py-2 align-top whitespace-nowrap">
+                                        {getFieldStatusBadge(field.status)}
+                                      </td>
+                                      <td className="px-3 py-2 align-top text-[11px] text-slate-600 space-y-1">
+                                        {field.status === 'EXTRACTED' ? (
+                                          <>
+                                            <div className="flex items-center gap-1.5 flex-wrap text-[10px]">
+                                              <span className="font-semibold text-slate-700">
+                                                Page {field.source.page_number}
+                                              </span>
+                                              <span>•</span>
+                                              <span className="font-mono bg-slate-100 text-slate-600 px-1 py-0.2 rounded border border-slate-200">
+                                                {field.source.extraction_method}
+                                              </span>
+                                              {field.source.evidence_location && (
+                                                <>
+                                                  <span>•</span>
+                                                  <span className="text-slate-500">{field.source.evidence_location}</span>
+                                                </>
+                                              )}
+                                            </div>
+                                            {field.source.evidence_snippet && (
+                                              <div className="font-mono text-[10px] text-slate-600 bg-slate-50 p-1.5 rounded border border-slate-200/70 max-w-md truncate">
+                                                &ldquo;{field.source.evidence_snippet}&rdquo;
+                                              </div>
+                                            )}
+                                          </>
+                                        ) : (
+                                          <span className="text-slate-400 italic text-[10px]">
+                                            {field.limitation_or_reason || 'Field not detected in document content'}
+                                          </span>
+                                        )}
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+
+                            <div className="text-[10px] text-slate-400 flex items-center justify-between border-t border-indigo-100/70 pt-1">
+                              <span>Document-specific deterministic field parser with OCR fallback.</span>
+                              <span className="italic">Sensitive banking credentials automatically masked by default.</span>
                             </div>
                           </div>
                         </td>

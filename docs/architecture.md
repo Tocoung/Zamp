@@ -2,8 +2,8 @@
 ## Architecture Design Document — Vendor Onboarding Automation
 
 **Author:** Lead Software Engineer  
-**Version:** 2.2.0 (Phase 2 — Step 2: Document Classification Engine & Explainability)  
-**Status:** Approved & Implemented Foundation, Security Hardening, Deterministic Validation, Decision Engine, End-to-End Integration, Document Intake, Storage Hardening, & Deterministic Document Classification  
+**Version:** 2.3.0 (Phase 2 — Step 3: OCR & Structured Information Extraction)  
+**Status:** Approved & Implemented Foundation, Security Hardening, Deterministic Validation, Decision Engine, End-to-End Integration, Document Intake, Storage Hardening, Document Classification, & OCR Structured Information Extraction  
 
 ---
 
@@ -521,8 +521,64 @@ Phase 2, Step 2 introduces a dedicated, explainable document classification engi
 
 ---
 
-## 13. Dependency Reproducibility Strategy
+## 13. Phase 2 — Step 3: OCR & Structured Information Extraction Pipeline
+
+Phase 2, Step 3 implements an end-to-end, multi-format OCR and deterministic structured information extraction engine with field-level provenance and sensitive data protection.
+
+### A. Core Architecture & Separation of Concerns
+- **`app/extraction/ocr_engine.py`:** Handles document stream recognition:
+  - **Digital PDF Extraction:** Directly extracts embedded text streams page-by-page via `pypdf`.
+  - **Scanned PDF Rendering & OCR:** For rasterized or scanned PDFs with insufficient digital text, renders pages to images via `pdf2image` (`pdftoppm`) within strict dimension limits (`2500px`) and processes each page using local Tesseract OCR (`pytesseract`).
+  - **Image Document OCR:** Processes standalone PNG and JPEG files using local Tesseract OCR with automatic image normalization.
+  - **Bounded Processing Limits:** Enforces hard caps on pages (`MAX_PAGES_LIMIT = 10`), rendering resolution, per-page character lengths, and total document text to prevent DoS attacks.
+- **`app/extraction/parsers.py` (`DocumentParser`):** Deterministic category-specific rule parsers:
+  - Maps recognized text lines to structured field schemas for `TAX_CERTIFICATE`, `BANK_PROOF`, `CERTIFICATE_OF_INCORPORATION`, `ADDRESS_PROOF`, and fallback `OTHER`.
+  - Extracts canonical key-value pairs without hallucinations or probabilistic guessing.
+  - Generates explicit field-level provenance: original `page_number`, `extraction_method` (`DIGITAL_TEXT` vs `OCR`), exact `evidence_location` (e.g. `Page 1, Line 3`), and contextual `evidence_snippet`.
+- **`app/schemas/extraction.py`:** Pydantic contracts for extraction data:
+  - `FieldStatus`: `EXTRACTED`, `PARTIAL`, `MISSING`, `INSUFFICIENT_TEXT`, `FAILED`.
+  - `ExtractionStatus`: `COMPLETED`, `PARTIAL`, `INSUFFICIENT_TEXT`, `FAILED`.
+  - `ExtractionLimitationCode`: Standardized programmatic limitation reasons (`NO_READABLE_TEXT`, `IMAGE_RESOLUTION_LOW`, `ROTATED_OR_SKEWED`, `TRUNCATED_MAX_PAGES`, etc.).
+  - `ExtractedField`: Typed representation of an extracted field including `value`, `masked_value`, `confidence`, and `source` (`FieldSource`).
+- **`app/models/extraction.py` (`DocumentExtraction`):** SQLAlchemy ORM entity:
+  - Stores extraction executions non-destructively in `document_extractions` table.
+  - Maintains `ON DELETE CASCADE` relationship with `vendor_documents` so physical document deletion automatically cascades and purges associated extraction records.
+- **`app/services/extraction_service.py` (`ExtractionService`):**
+  - Manages secure in-memory document decryption, text recognition execution, deterministic field parsing, and database transactions.
+  - Emits `DOCUMENT_EXTRACTED` event into `VendorActivity` timeline with field counts and safe metadata.
+  - Strictly preserves vendor compliance state (`status` remains unchanged).
+
+### B. Category-Specific Extraction Schemas
+1. **`TAX_CERTIFICATE`:**
+   - Fields: `gstin`, `legal_entity_name`, `registration_date`, `registered_address`, `taxpayer_type`.
+   - Normalization: OCR character normalization for GSTINs (e.g. `O` $\leftrightarrow$ `0`), ISO 8601 date parsing (`YYYY-MM-DD`).
+2. **`BANK_PROOF`:**
+   - Fields: `bank_name`, `account_holder_name`, `account_number`, `ifsc_code`, `routing_number`, `account_type`.
+   - Security: Sensitive account numbers are masked by default (`masked_value = "**********7890"`), preventing PII leakage in UI inspection, activity logs, and responses.
+3. **`CERTIFICATE_OF_INCORPORATION`:**
+   - Fields: `company_name`, `cin_or_reg_number`, `incorporation_date`, `registered_jurisdiction`.
+4. **`ADDRESS_PROOF`:**
+   - Fields: `resident_or_entity_name`, `full_address`, `issue_date`, `document_type`.
+5. **`OTHER` / Fallback:**
+   - Dynamic key-value extraction for detected identifier labels (`Tax ID`, `Account`, `Registration`, `Date`, `Address`).
+
+### C. Missing Field Determinism (Zero Hallucination)
+When a document lacks expected fields (such as a tax certificate with registration date or address omitted):
+- The engine marks the field with status `FieldStatus.MISSING`.
+- `value` is explicitly set to `None`.
+- `limitation_or_reason` provides an unambiguous explanation (`"Field not detected in document content."`).
+- Under no circumstances does the engine invent placeholder or synthetic data.
+
+### D. REST API Endpoints
+- `POST /api/v1/vendors/{vendor_id}/documents/{document_id}/extract`: Runs OCR/extraction and persists result.
+- `GET /api/v1/vendors/{vendor_id}/documents/{document_id}/extraction`: Returns latest extraction and field provenance.
+- `GET /api/v1/vendors/{vendor_id}/documents/{document_id}/extraction-history`: Returns chronological extraction history.
+- `GET /api/v1/vendors/{vendor_id}/extractions`: Returns extractions across all vendor documents.
+
+---
+
+## 14. Dependency Reproducibility Strategy
 
 For a one-week case study project, dependency management balances determinism with zero unnecessary tool overhead:
-- **Backend:** Pin explicit, exact versions in `backend/requirements.txt` (`==` pinning). Standard installation via `python3 -m venv .venv && pip install -r requirements.txt`. Includes `cryptography==50.0.2` for authenticated encryption at rest.
-- **Frontend:** Pinned exact dependency ranges with an immutable `frontend/package-lock.json`. Clean, reproducible installation via `npm ci`.
+- **Backend:** Pin explicit, exact versions in `backend/requirements.txt` (`==` pinning). Standard installation via `python3 -m venv .venv && pip install -r requirements.txt`. Includes `cryptography==50.0.2`, `pytesseract==0.3.13`, `pdf2image==1.17.0`, and `pillow==11.0.0`. System binaries: `tesseract` and `poppler` (`pdftoppm`).
+- **Frontend:** Pinned exact dependency ranges with an immutable `frontend/package-lock.json`. Clean, reproducible installation via `npm ci`. Fast production build via `esbuild` script (`npm run build`).

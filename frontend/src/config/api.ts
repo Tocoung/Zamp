@@ -523,6 +523,7 @@ export interface VendorDocumentResponse {
   created_at: string;
   updated_at: string;
   latest_classification?: DocumentClassificationResponse | null;
+  latest_extraction?: DocumentExtractionResponse | null;
 }
 
 export type ClassificationStatus =
@@ -776,3 +777,136 @@ export async function fetchDocumentClassificationHistory(
 }
 
 
+
+
+export type FieldStatus = 'EXTRACTED' | 'MISSING' | 'UNREADABLE' | 'NEEDS_REVIEW';
+
+export type ExtractionStatus = 'COMPLETED' | 'PARTIAL' | 'INSUFFICIENT_TEXT' | 'FAILED';
+
+export interface FieldSource {
+  document_id: string;
+  page_number: number;
+  extraction_method: 'DIGITAL_TEXT' | 'OCR';
+  evidence_location?: string | null;
+  evidence_snippet?: string | null;
+}
+
+export interface ExtractedField {
+  field_name: string;
+  value?: string | null;
+  masked_value?: string | null;
+  status: FieldStatus;
+  confidence?: number | null;
+  source: FieldSource;
+  limitation_or_reason?: string | null;
+}
+
+export interface DocumentExtractionResponse {
+  id: string;
+  document_id: string;
+  vendor_id: string;
+  document_category_used: string;
+  status: ExtractionStatus;
+  fields: Record<string, ExtractedField>;
+  extracted_fields_count: number;
+  limitation_code?: string | null;
+  limitation_reason?: string | null;
+  ocr_engine_version: string;
+  extracted_at: string;
+}
+
+export interface DocumentExtractionHistoryPagination {
+  items: DocumentExtractionResponse[];
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+}
+
+export async function extractVendorDocument(
+  vendorId: string,
+  documentId: string
+): Promise<DocumentExtractionResponse> {
+  const response = await fetch(
+    `${API_BASE_URL}/vendors/${vendorId}/documents/${documentId}/extract`,
+    {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+      },
+    }
+  );
+
+  if (!response.ok) {
+    let errorMsg = `Extraction failed (HTTP ${response.status})`;
+    try {
+      const err = await response.json();
+      if (err.detail) {
+        errorMsg = typeof err.detail === 'string' ? err.detail : JSON.stringify(err.detail);
+      }
+    } catch {
+      // fallback
+    }
+    throw new Error(errorMsg);
+  }
+
+  return response.json();
+}
+
+export async function fetchDocumentExtraction(
+  vendorId: string,
+  documentId: string
+): Promise<DocumentExtractionResponse> {
+  const response = await fetch(
+    `${API_BASE_URL}/vendors/${vendorId}/documents/${documentId}/extraction`,
+    {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+      },
+    }
+  );
+
+  if (!response.ok) {
+    let errorMsg = `Failed to fetch extraction (HTTP ${response.status})`;
+    try {
+      const err = await response.json();
+      if (err.detail) errorMsg = err.detail;
+    } catch {
+      // fallback
+    }
+    throw new Error(errorMsg);
+  }
+
+  return response.json();
+}
+
+export async function fetchDocumentExtractionHistory(
+  vendorId: string,
+  documentId: string,
+  page = 1,
+  pageSize = 20
+): Promise<DocumentExtractionHistoryPagination> {
+  const response = await fetch(
+    `${API_BASE_URL}/vendors/${vendorId}/documents/${documentId}/extraction-history?page=${page}&page_size=${pageSize}`,
+    {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+      },
+    }
+  );
+
+  if (!response.ok) {
+    let errorMsg = `Failed to fetch extraction history (HTTP ${response.status})`;
+    try {
+      const err = await response.json();
+      if (err.detail) errorMsg = err.detail;
+    } catch {
+      // fallback
+    }
+    throw new Error(errorMsg);
+  }
+
+  return response.json();
+}

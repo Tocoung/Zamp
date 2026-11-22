@@ -6,9 +6,19 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.schemas.document import VendorDocumentResponse, VendorDocumentPagination, DocumentCategory
+from typing import List
 from app.schemas.classification import (
     DocumentClassificationResponse,
     DocumentClassificationHistoryPagination,
+)
+from app.schemas.extraction import (
+    DocumentExtractionResponse,
+    DocumentExtractionHistoryPagination,
+)
+from app.services.extraction_service import (
+    extraction_service,
+    ExtractionServiceError,
+    ExtractionNotFoundError,
 )
 from app.services.document_service import (
     document_service,
@@ -333,4 +343,149 @@ def get_document_classification_history(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(e),
+        )
+
+
+@router.post(
+    "/{document_id}/extract",
+    response_model=DocumentExtractionResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Extract Structured Information",
+    description="Runs local OCR and structured field extraction with provenance for a vendor document.",
+)
+def extract_document(
+    vendor_id: str,
+    document_id: str,
+    category: Optional[str] = Query(None, description="Optional category override to guide schema"),
+    db: Session = Depends(get_db),
+) -> DocumentExtractionResponse:
+    """Run OCR and structured field extraction on an uploaded document."""
+    try:
+        extraction = extraction_service.extract_document(
+            db=db,
+            vendor_id=vendor_id,
+            document_id=document_id,
+            category_override=category,
+        )
+        return DocumentExtractionResponse.model_validate(extraction)
+    except VendorNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Vendor '{vendor_id}' not found.",
+        )
+    except DocumentNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Document '{document_id}' not found for vendor '{vendor_id}'.",
+        )
+    except ExtractionServiceError as e:
+        detail_msg = str(e)
+        if "not found" in detail_msg.lower():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail_msg)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=detail_msg,
+        )
+
+
+@router.get(
+    "/{document_id}/extraction",
+    response_model=DocumentExtractionResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Get Latest Document Extraction",
+    description="Retrieves the most recent structured extraction result and field provenance for a document.",
+)
+def get_document_extraction(
+    vendor_id: str,
+    document_id: str,
+    db: Session = Depends(get_db),
+) -> DocumentExtractionResponse:
+    """Retrieve the latest extraction result for a document."""
+    try:
+        extraction = extraction_service.get_latest_extraction(
+            db=db, vendor_id=vendor_id, document_id=document_id
+        )
+        if not extraction:
+            raise ExtractionNotFoundError(f"No extraction found for document '{document_id}'.")
+        return DocumentExtractionResponse.model_validate(extraction)
+    except DocumentNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Document '{document_id}' not found for vendor '{vendor_id}'.",
+        )
+    except ExtractionNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No extraction found for document '{document_id}'.",
+        )
+    except ExtractionServiceError as e:
+        detail_msg = str(e)
+        if "not found" in detail_msg.lower():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail_msg)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=detail_msg,
+        )
+
+
+@router.get(
+    "/{document_id}/extraction-history",
+    response_model=DocumentExtractionHistoryPagination,
+    status_code=status.HTTP_200_OK,
+    summary="Get Document Extraction History",
+    description="Retrieves chronological history of all extraction runs for a document.",
+)
+def get_document_extraction_history(
+    vendor_id: str,
+    document_id: str,
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(20, ge=1, le=100, description="Items per page"),
+    db: Session = Depends(get_db),
+) -> DocumentExtractionHistoryPagination:
+    """Retrieve paginated extraction history for a document."""
+    try:
+        items, total, total_pages = extraction_service.get_extraction_history(
+            db=db, vendor_id=vendor_id, document_id=document_id, page=page, page_size=page_size
+        )
+        return DocumentExtractionHistoryPagination(
+            items=[DocumentExtractionResponse.model_validate(x) for x in items],
+            total=total,
+            page=page,
+            page_size=page_size,
+            total_pages=total_pages,
+        )
+    except DocumentNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Document '{document_id}' not found for vendor '{vendor_id}'.",
+        )
+    except ExtractionServiceError as e:
+        detail_msg = str(e)
+        if "not found" in detail_msg.lower():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail_msg)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=detail_msg,
+        )
+
+
+@router.get(
+    "/extractions",
+    response_model=List[DocumentExtractionResponse],
+    status_code=status.HTTP_200_OK,
+    summary="List Vendor Extractions",
+    description="Retrieves structured extractions across all documents belonging to a vendor.",
+)
+def list_vendor_extractions(
+    vendor_id: str,
+    db: Session = Depends(get_db),
+) -> List[DocumentExtractionResponse]:
+    """List latest extraction records for all vendor documents."""
+    try:
+        items = extraction_service.list_vendor_extractions(db=db, vendor_id=vendor_id)
+        return [DocumentExtractionResponse.model_validate(x) for x in items]
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to list vendor extractions ({type(e).__name__}).",
         )
