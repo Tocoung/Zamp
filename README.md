@@ -2,7 +2,7 @@
 
 > **Case Study:** Zamp AI Solutions Analyst Case Study  
 > **Phase:** 2 (Step 4 — Extraction Confidence & Evidence Management)  
-> **Status:** Fully Integrated, Tested, and Verified (195 Automated Tests Passing)  
+> **Status:** Fully Integrated, Tested, and Verified (201 Automated Tests Passing)  
 
 An automated platform designed to streamline vendor company onboarding, compliance document intake & secure storage, multi-source verification, deterministic validation, explainable decisioning (`APPROVED` / `PENDING` / `REJECTED`), lifecycle activity tracking, and human-in-the-loop review.
 
@@ -23,7 +23,7 @@ The project uses a clean **Modular Monolith** architecture with decoupled presen
 - **Activity & Lifecycle History:** Dedicated `vendor_activities` table tracking discrete lifecycle events (`VENDOR_SUBMITTED`, `DECISION_EXECUTED`, `VENDOR_UPDATED`, `DECISION_REEVALUATED`, `DOCUMENT_UPLOADED`, `DOCUMENT_DELETED`, `DOCUMENT_CLASSIFIED`, `DOCUMENT_EXTRACTED`) in deterministic chronological order with zero sensitive financial data leakage.
 - **Persistence:** SQLAlchemy 2.0 (Active: SQLite with deterministic path resolution; Production interface: PostgreSQL via `DATABASE_URL` with driver).
 - **Audit History:** Dedicated `vendor_decisions`, `vendor_documents`, `document_classifications`, and `document_extractions` tables preserving immutable audit records transactionally.
-- **Testing:** Pytest + FastAPI TestClient with temporary isolated SQLite databases and isolated storage directories (**195 automated tests passing**).
+- **Testing:** Pytest + FastAPI TestClient with temporary isolated SQLite databases and isolated storage directories (**201 automated tests passing**).
 
 Detailed architectural boundaries and module roadmaps can be found in [docs/architecture.md](docs/architecture.md).
 
@@ -571,9 +571,10 @@ Phase 2, Step 4 strengthens the extraction foundation by providing explainable, 
 ```bash
 PYTHONPATH=backend backend/.venv/bin/pytest backend/tests/ -v
 ```
-**Result:** **195 passed in 71.81s** (Exit code: `0`).
+**Result:** **201 passed in 5.12s** (Exit code: `0`).
 
 Includes complete coverage across:
+- `test_user_scenarios.py`: 6 automated end-to-end scenario tests directly validating high-confidence extraction, distorted low-confidence scans, ambiguous date non-guessing, missing vs unreadable distinction, original page preview streaming, and zero profile/decision overwrite.
 - `test_extraction_quality.py`: 20 new tests covering normalization (GSTIN, dates, names, addresses, IFSC, account masking), date ambiguity detection without guessing, OCR character repair penalties, unreadable field classification, signal breakdown calculation, explainable thresholds, deterministic reproducibility, and authenticated page preview API streaming.
 - `test_extraction.py`: 7 comprehensive extraction tests (digital PDF extraction, scanned PDF OCR rendering, image OCR recognition, missing field determinism, field-level provenance tracking, account number masking, cascade deletion, and vendor decision preservation).
 - `test_classification.py`: 17 comprehensive classification tests (digital PDF text extraction, empty/scanned PDF handling, image file rejection without OCR, incorporation/tax/bank/address rule scoring, ambiguous and conflicting signals, filename-only bounds, classify/get/history endpoints, cross-vendor isolation, and proof that vendor compliance status is unmutated).
