@@ -497,7 +497,7 @@ export async function updateVendor(
 }
 
 // ==========================================
-// Phase 2, Step 1: Document Management Types & API
+// Document Management Types & API
 // ==========================================
 
 export type DocumentCategory =

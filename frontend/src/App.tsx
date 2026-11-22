@@ -1,7 +1,5 @@
 import React, { useState } from 'react';
 import { Header } from './components/Header';
-import { BackendStatus } from './components/BackendStatus';
-import { ArchitectureRoadmap } from './components/ArchitectureRoadmap';
 import { VendorForm } from './components/VendorForm';
 import { VendorList } from './components/VendorList';
 import { Footer } from './components/Footer';
@@ -12,11 +10,10 @@ import {
   FileCheck,
   Building2,
   ListFilter,
-  Layers,
 } from 'lucide-react';
 
 export const App: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'directory' | 'register' | 'architecture'>('directory');
+  const [activeTab, setActiveTab] = useState<'directory' | 'register'>('directory');
   const [directoryRefreshTrigger, setDirectoryRefreshTrigger] = useState(0);
 
   const handleVendorCreated = () => {
@@ -34,7 +31,7 @@ export const App: React.FC = () => {
           <div className="relative z-10 max-w-3xl">
             <div className="inline-flex items-center space-x-2 px-3 py-1 rounded-full bg-sky-500/20 text-sky-300 text-xs font-semibold mb-4 border border-sky-400/30">
               <Sparkles className="w-3.5 h-3.5" />
-              <span>Zamp AI Solutions Analyst Case Study</span>
+              <span>Enterprise Compliance & Verification</span>
             </div>
             <h1 className="text-3xl sm:text-4xl font-extrabold tracking-tight text-white">
               Autonomous Vendor Onboarding Automation
@@ -51,11 +48,11 @@ export const App: React.FC = () => {
               </div>
               <div className="flex items-center space-x-1.5">
                 <Database className="w-4 h-4 text-sky-400" />
-                <span>Extensible Persistence</span>
+                <span>Bank-Grade Encryption</span>
               </div>
               <div className="flex items-center space-x-1.5">
                 <FileCheck className="w-4 h-4 text-sky-400" />
-                <span>Document Extraction Architecture</span>
+                <span>Intelligent Document OCR</span>
               </div>
             </div>
           </div>
@@ -89,19 +86,6 @@ export const App: React.FC = () => {
               <Building2 className="w-4 h-4" />
               <span>Register Vendor</span>
             </button>
-
-            <button
-              type="button"
-              onClick={() => setActiveTab('architecture')}
-              className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-all ${
-                activeTab === 'architecture'
-                  ? 'bg-sky-600 text-white shadow-sm'
-                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
-              }`}
-            >
-              <Layers className="w-4 h-4" />
-              <span>System Architecture & Health</span>
-            </button>
           </nav>
 
           <div className="hidden md:flex items-center gap-2 text-[11px] text-slate-500">
@@ -125,23 +109,6 @@ export const App: React.FC = () => {
             onVendorCreated={handleVendorCreated}
             onNavigateToDirectory={() => setActiveTab('directory')}
           />
-        )}
-
-        {activeTab === 'architecture' && (
-          <div className="space-y-6">
-            <BackendStatus />
-            <ArchitectureRoadmap />
-            
-            <div className="bg-sky-50/70 border border-sky-200/80 rounded-xl p-5 text-xs text-sky-900">
-              <div className="font-semibold text-sm flex items-center mb-1 text-sky-950">
-                <Shield className="w-4 h-4 mr-1.5 text-sky-700" />
-                Phase 2 Architecture: Intelligent Document Processing & Evidence Quality
-              </div>
-              <p className="text-sky-800 leading-relaxed">
-                The platform delivers end-to-end vendor onboarding with deterministic statutory validation, Fernet AES-256 financial data encryption, encrypted supporting document intake, multi-format OCR extraction (PDF, PNG, JPEG), explainable field-level evidence quality scoring, and immutable lifecycle audit tracking. In accordance with strict submission readiness boundaries, all extraction and decision evaluations are self-contained and deterministic without external AI dependencies or cross-document discrepancy guessing.
-              </p>
-            </div>
-          </div>
         )}
       </main>
 

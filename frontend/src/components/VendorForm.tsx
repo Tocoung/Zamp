@@ -213,7 +213,7 @@ export const VendorForm: React.FC<VendorFormProps> = ({
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-sky-50 text-sky-700 border border-sky-200 hover:bg-sky-100 transition-colors"
           >
             <Sparkles className="w-3.5 h-3.5 text-sky-600" />
-            Fill Demo Data
+            Load Sample Data
           </button>
           <button
             type="button"
