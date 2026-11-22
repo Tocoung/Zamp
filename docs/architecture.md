@@ -2,8 +2,8 @@
 ## Architecture Design Document — Vendor Onboarding Automation
 
 **Author:** Lead Software Engineer  
-**Version:** 2.3.0 (Phase 2 — Step 3: OCR & Structured Information Extraction)  
-**Status:** Approved & Implemented Foundation, Security Hardening, Deterministic Validation, Decision Engine, End-to-End Integration, Document Intake, Storage Hardening, Document Classification, & OCR Structured Information Extraction  
+**Version:** 2.4.0 (Phase 2 — Submission Readiness & Final Integration)  
+**Status:** Approved & Implemented Foundation, Security Hardening, Deterministic Validation, Decision Engine, End-to-End Integration, Document Intake, Storage Hardening, Document Classification, OCR Structured Information Extraction, Evidence Quality Scoring, & Operational Readiness  
 
 ---
 

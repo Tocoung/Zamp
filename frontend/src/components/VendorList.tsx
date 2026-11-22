@@ -12,6 +12,9 @@ import {
   UserPlus,
   Loader2,
   Filter,
+  CheckCircle2,
+  Clock,
+  XCircle,
 } from 'lucide-react';
 import {
   fetchVendors,
@@ -43,6 +46,33 @@ export const VendorList: React.FC<VendorListProps> = ({ onNavigateToForm }) => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [inspectLoadingId, setInspectLoadingId] = useState<string | null>(null);
 
+  // Operational summary counts
+  const [metrics, setMetrics] = useState({
+    total: 0,
+    approved: 0,
+    pending: 0,
+    rejected: 0,
+  });
+
+  const loadMetrics = async () => {
+    try {
+      const [allRes, appRes, pendRes, rejRes] = await Promise.all([
+        fetchVendors(1, 1, 'ALL'),
+        fetchVendors(1, 1, 'APPROVED'),
+        fetchVendors(1, 1, 'PENDING'),
+        fetchVendors(1, 1, 'REJECTED'),
+      ]);
+      setMetrics({
+        total: allRes.total,
+        approved: appRes.total,
+        pending: pendRes.total,
+        rejected: rejRes.total,
+      });
+    } catch {
+      // Graceful fallback
+    }
+  };
+
   const loadVendors = async (page = 1, status = statusFilter, search = searchTerm) => {
     setIsLoading(true);
     setError(null);
@@ -61,6 +91,7 @@ export const VendorList: React.FC<VendorListProps> = ({ onNavigateToForm }) => {
 
   useEffect(() => {
     loadVendors(currentPage, statusFilter, searchTerm);
+    loadMetrics();
   }, [currentPage, statusFilter]);
 
   const handleSearchSubmit = (e: React.FormEvent) => {
@@ -148,6 +179,73 @@ export const VendorList: React.FC<VendorListProps> = ({ onNavigateToForm }) => {
               Register New
             </button>
           )}
+        </div>
+      </div>
+
+      {/* Operational Summary Cards */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 p-5 border-b border-slate-200/80 bg-slate-50/40">
+        <div
+          onClick={() => { setStatusFilter('ALL'); setCurrentPage(1); }}
+          className={`cursor-pointer p-4 rounded-xl border transition-all ${
+            statusFilter === 'ALL'
+              ? 'bg-white border-sky-400 ring-2 ring-sky-100 shadow-sm'
+              : 'bg-white border-slate-200/80 hover:border-slate-300'
+          }`}
+        >
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-medium text-slate-500">Total Entities</span>
+            <Building2 className="w-4 h-4 text-slate-400" />
+          </div>
+          <div className="mt-2 text-2xl font-bold text-slate-900">{metrics.total}</div>
+          <div className="text-[11px] text-slate-400 mt-0.5">All registered records</div>
+        </div>
+
+        <div
+          onClick={() => { setStatusFilter('APPROVED'); setCurrentPage(1); }}
+          className={`cursor-pointer p-4 rounded-xl border transition-all ${
+            statusFilter === 'APPROVED'
+              ? 'bg-white border-emerald-400 ring-2 ring-emerald-100 shadow-sm'
+              : 'bg-white border-slate-200/80 hover:border-emerald-300'
+          }`}
+        >
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-medium text-emerald-700">Approved</span>
+            <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+          </div>
+          <div className="mt-2 text-2xl font-bold text-emerald-900">{metrics.approved}</div>
+          <div className="text-[11px] text-emerald-600 mt-0.5">Verified & active vendors</div>
+        </div>
+
+        <div
+          onClick={() => { setStatusFilter('PENDING'); setCurrentPage(1); }}
+          className={`cursor-pointer p-4 rounded-xl border transition-all ${
+            statusFilter === 'PENDING'
+              ? 'bg-white border-amber-400 ring-2 ring-amber-100 shadow-sm'
+              : 'bg-white border-slate-200/80 hover:border-amber-300'
+          }`}
+        >
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-medium text-amber-700">Pending Review</span>
+            <Clock className="w-4 h-4 text-amber-500" />
+          </div>
+          <div className="mt-2 text-2xl font-bold text-amber-900">{metrics.pending}</div>
+          <div className="text-[11px] text-amber-600 mt-0.5">Awaiting compliance review</div>
+        </div>
+
+        <div
+          onClick={() => { setStatusFilter('REJECTED'); setCurrentPage(1); }}
+          className={`cursor-pointer p-4 rounded-xl border transition-all ${
+            statusFilter === 'REJECTED'
+              ? 'bg-white border-rose-400 ring-2 ring-rose-100 shadow-sm'
+              : 'bg-white border-slate-200/80 hover:border-rose-300'
+          }`}
+        >
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-medium text-rose-700">Rejected</span>
+            <XCircle className="w-4 h-4 text-rose-500" />
+          </div>
+          <div className="mt-2 text-2xl font-bold text-rose-900">{metrics.rejected}</div>
+          <div className="text-[11px] text-rose-600 mt-0.5">Failed statutory rules</div>
         </div>
       </div>
 
@@ -353,6 +451,7 @@ export const VendorList: React.FC<VendorListProps> = ({ onNavigateToForm }) => {
               v.id === updatedVendor.id ? { ...v, status: updatedVendor.status } : v
             )
           );
+          loadMetrics();
         }}
       />
     </div>

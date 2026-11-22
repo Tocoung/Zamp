@@ -13,7 +13,6 @@ import {
   Building2,
   ListFilter,
   Layers,
-  ArrowRight,
 } from 'lucide-react';
 
 export const App: React.FC = () => {
@@ -105,8 +104,11 @@ export const App: React.FC = () => {
             </button>
           </nav>
 
-          <div className="hidden md:flex items-center gap-2 text-[11px] text-slate-500 font-mono">
-            <span>API: /api/v1/vendors</span>
+          <div className="hidden md:flex items-center gap-2 text-[11px] text-slate-500">
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-100 font-medium">
+              <Shield className="w-3.5 h-3.5 text-emerald-600" />
+              AES-256 Encrypted Storage
+            </span>
           </div>
         </div>
 
@@ -130,13 +132,13 @@ export const App: React.FC = () => {
             <BackendStatus />
             <ArchitectureRoadmap />
             
-            <div className="bg-indigo-50/60 border border-indigo-200/80 rounded-xl p-5 text-xs text-indigo-900">
-              <div className="font-semibold text-sm flex items-center mb-1 text-indigo-950">
-                <ArrowRight className="w-4 h-4 mr-1 text-indigo-700" />
-                Phase 1 — Step 4 Scope Demarcation: Decision Engine & Explainability
+            <div className="bg-sky-50/70 border border-sky-200/80 rounded-xl p-5 text-xs text-sky-900">
+              <div className="font-semibold text-sm flex items-center mb-1 text-sky-950">
+                <Shield className="w-4 h-4 mr-1.5 text-sky-700" />
+                Phase 2 Architecture: Intelligent Document Processing & Evidence Quality
               </div>
-              <p className="text-indigo-800 leading-relaxed">
-                Step 4 establishes the Deterministic Decision Engine: consumes the Step 3 validation engine, maps findings to business policy outcomes (APPROVED, PENDING, REJECTED), generates actionable next-step recommendations, and persists audited decision snapshots and vendor status transactionally in SQLite without duplicating sensitive banking data. In accordance with strict incremental delivery, this is a deterministic business rules engine, NOT an AI/LLM classifier, external government tax verification, OCR extractor (Phase 2), or human review override system (Phase 3).
+              <p className="text-sky-800 leading-relaxed">
+                The platform delivers end-to-end vendor onboarding with deterministic statutory validation, Fernet AES-256 financial data encryption, encrypted supporting document intake, multi-format OCR extraction (PDF, PNG, JPEG), explainable field-level evidence quality scoring, and immutable lifecycle audit tracking. In accordance with strict submission readiness boundaries, all extraction and decision evaluations are self-contained and deterministic without external AI dependencies or cross-document discrepancy guessing.
               </p>
             </div>
           </div>

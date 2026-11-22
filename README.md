@@ -1,8 +1,8 @@
 # Zamp — AI-Powered Vendor Onboarding Automation
 
 > **Case Study:** Zamp AI Solutions Analyst Case Study  
-> **Phase:** 2 (Step 4 — Extraction Confidence & Evidence Management)  
-> **Status:** Fully Integrated, Tested, and Verified (201 Automated Tests Passing)  
+> **Phase:** 2 (Submission Readiness & Final Integration)  
+> **Status:** Fully Integrated, Tested, and Verified (235 Automated Tests Passing)  
 
 An automated platform designed to streamline vendor company onboarding, compliance document intake & secure storage, multi-source verification, deterministic validation, explainable decisioning (`APPROVED` / `PENDING` / `REJECTED`), lifecycle activity tracking, and human-in-the-loop review.
 
@@ -23,7 +23,7 @@ The project uses a clean **Modular Monolith** architecture with decoupled presen
 - **Activity & Lifecycle History:** Dedicated `vendor_activities` table tracking discrete lifecycle events (`VENDOR_SUBMITTED`, `DECISION_EXECUTED`, `VENDOR_UPDATED`, `DECISION_REEVALUATED`, `DOCUMENT_UPLOADED`, `DOCUMENT_DELETED`, `DOCUMENT_CLASSIFIED`, `DOCUMENT_EXTRACTED`) in deterministic chronological order with zero sensitive financial data leakage.
 - **Persistence:** SQLAlchemy 2.0 (Active: SQLite with deterministic path resolution; Production interface: PostgreSQL via `DATABASE_URL` with driver).
 - **Audit History:** Dedicated `vendor_decisions`, `vendor_documents`, `document_classifications`, and `document_extractions` tables preserving immutable audit records transactionally.
-- **Testing:** Pytest + FastAPI TestClient with temporary isolated SQLite databases and isolated storage directories (**201 automated tests passing**).
+- **Testing:** Pytest + FastAPI TestClient with temporary isolated SQLite databases and isolated storage directories (**235 automated tests passing**).
 
 Detailed architectural boundaries and module roadmaps can be found in [docs/architecture.md](docs/architecture.md).
 
@@ -631,9 +631,9 @@ npm --prefix frontend run build
 
 ---
 
-## 12. Scope Boundaries & Deferred Capabilities (Beyond Phase 2, Step 4)
+## 12. Scope Boundaries & Deferred Capabilities (Beyond Phase 2)
 
-In strict adherence to Phase 2, Step 4 boundaries, the following advanced capabilities are deliberately deferred to subsequent roadmap steps:
+In strict adherence to Phase 2 boundaries, the following advanced capabilities are deliberately deferred to subsequent roadmap steps:
 - **Cross-Document Consistency Validation:** Automated reconciliation between document-extracted fields and vendor form fields (e.g. matching legal entity name on tax certificate vs bank statement vs web form) (Planned: Phase 2, Step 5).
 - **Discrepancy Detection & Highlighting:** Generating cross-document discrepancy flags and confidence scores for human reviewer triage (Planned: Phase 2, Step 5).
 - **Automated Document-Driven Compliance Decisioning:** Directly altering vendor approval status based on document contents (Planned: Phase 2, Step 5).

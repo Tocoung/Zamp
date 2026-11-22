@@ -1,10 +1,11 @@
 const path = require('path');
-const { buildSync } = require('esbuild');
+const { build } = require('esbuild');
 
 const lucidePath = path.resolve(__dirname, '../node_modules/lucide-react/dist/cjs/lucide-react.js');
 console.log('Building production bundle with esbuild...');
 const t0 = Date.now();
-buildSync({
+
+build({
   entryPoints: [path.resolve(__dirname, '../src/main.tsx')],
   bundle: true,
   outfile: path.resolve(__dirname, '../dist/assets/index-CnOmatPM.js'),
@@ -19,5 +20,11 @@ buildSync({
   alias: {
     'lucide-react': lucidePath,
   },
-});
-console.log(`Build completed successfully in ${Date.now() - t0} ms.`);
+})
+  .then(() => {
+    console.log(`Build completed successfully in ${Date.now() - t0} ms.`);
+  })
+  .catch((err) => {
+    console.error('Build failed:', err);
+    process.exit(1);
+  });
