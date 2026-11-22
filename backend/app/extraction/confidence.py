@@ -51,6 +51,7 @@ class QualityAssessor:
         is_unreadable: bool = False,
         field_ocr_confidence: Optional[float] = None,
         has_token_level_confidence: bool = False,
+        label_ocr_confidence: Optional[float] = None,
     ) -> QualityAssessment:
         """Computes deterministic quality score, signal breakdown, and explainable status.
         
@@ -62,22 +63,82 @@ class QualityAssessor:
             normalization_adjustment (w_N = 0.10)
             ambiguity_penalty (w_A = 0.10)
         """
-        # 1. Unreadable field handling
+        # 1. Unreadable field handling (weighted signal evidence score)
         if is_unreadable:
+            # Source quality of the detected anchor/label region
+            if extraction_method == "DIGITAL_TEXT":
+                source_q = 0.98
+            elif extraction_method == "OCR":
+                if label_ocr_confidence is not None:
+                    source_q = min(0.95, max(0.20, float(label_ocr_confidence)))
+                elif has_token_level_confidence and field_ocr_confidence is not None:
+                    source_q = min(0.95, max(0.20, float(field_ocr_confidence)))
+                elif raw_ocr_confidence is not None and raw_ocr_confidence > 0:
+                    source_q = min(0.90, max(0.20, float(raw_ocr_confidence)))
+                else:
+                    source_q = 0.50
+            else:
+                source_q = float(raw_ocr_confidence or 0.40)
+
+            # Label match signal
+            if is_exact_label:
+                label_q = 1.00
+            elif has_label_match:
+                label_q = 0.85
+            else:
+                label_q = 0.50
+
+            # Format and normalization are 0.0 because value is unreadable
+            format_q = 0.0
+            norm_q = 0.0
+
+            # Provenance signal
+            prov_q = 0.0
+            if has_page:
+                prov_q += 0.50
+            if has_location:
+                prov_q += 0.30
+            if has_snippet:
+                prov_q += 0.20
+
+            # Ambiguity: no extracted value candidate
+            ambiguity_q = 0.0
+
+            # Weighted composite score using documented weights:
+            # 0.20 * source_q + 0.20 * label_q + 0.25 * format_q + 0.15 * prov_q + 0.10 * norm_q + 0.10 * ambiguity_q
+            raw_score = (
+                0.20 * source_q +
+                0.20 * label_q +
+                0.25 * format_q +
+                0.15 * prov_q +
+                0.10 * norm_q +
+                0.10 * ambiguity_q
+            )
+            quality_score = round(raw_score, 2)
+
             breakdown = QualityBreakdown(
-                source_quality=round(raw_ocr_confidence or 0.40, 2),
-                label_match=1.0 if has_label_match else 0.50,
+                source_quality=round(source_q, 2),
+                label_match=round(label_q, 2),
                 format_validity=0.0,
                 normalization_adjustment=0.0,
-                ambiguity_penalty=1.0,
-                provenance_quality=0.80 if has_page else 0.0,
+                ambiguity_penalty=0.0,
+                provenance_quality=round(prov_q, 2),
+            )
+
+            explanation = (
+                f"Unreadable field evidence quality ({quality_score:.2f}): "
+                f"Field '{field_name}' label was identified in source document, but the corresponding value text was illegible or unreadable. "
+                f"Score reflects evidence anchor quality, not recovered value confidence."
             )
             return QualityAssessment(
-                quality_score=0.20,
+                quality_score=quality_score,
                 breakdown=breakdown,
                 status=FieldStatus.UNREADABLE,
-                explanation=f"Field '{field_name}' label was detected but text in value region was illegible or unreadable.",
-                reasons_for_review=["Illegible or corrupted text in field value region"],
+                explanation=explanation,
+                reasons_for_review=[
+                    "Illegible or corrupted text in field value region",
+                    "No value could be extracted",
+                ],
             )
 
         # 2. Missing field handling

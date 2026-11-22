@@ -516,9 +516,9 @@ Deterministic rules extract canonical key-value fields for each document categor
 
 ---
 
-## 6. Extraction Confidence, Normalization & Evidence Hardening (Step 4 & 4.1)
+## 6. Extraction Confidence, Evidence Quality & Hardening (Steps 4, 4.1 & 4.2)
 
-Phase 2, Steps 4 and 4.1 strengthen the extraction foundation by providing explainable, signal-grounded confidence scores, word-level OCR token confidence, calendar date validation, a dedicated normalization layer, honest provenance integrity, and interactive original document page inspection with preview safety hardening.
+Phase 2, Steps 4, 4.1, and 4.2 strengthen the extraction foundation by providing explainable, signal-grounded confidence scores, word-level OCR token confidence, calendar date validation, multi-line candidate token isolation, unreadable evidence scoring, a dedicated normalization layer, honest provenance integrity, and interactive original document page inspection with preview safety hardening.
 
 ### A. Explainable Quality Assessment & Consistent Formula (`app/extraction/confidence.py`)
 - **Measured Signals (Zero Hardcoded Constants):** Field confidence is calculated from six concrete, verifiable signals:
@@ -531,15 +531,21 @@ Phase 2, Steps 4 and 4.1 strengthen the extraction foundation by providing expla
 - **Internally Consistent Composite Score Formula (Weights Sum to 1.00):**
   $$\text{Composite Score} = (0.25 \times \text{format}) + (0.20 \times \text{source}) + (0.20 \times \text{label}) + (0.15 \times \text{provenance}) + (0.10 \times \text{norm}) + (0.10 \times \text{ambiguity})$$
   *(Note: Weights strictly sum to $0.25 + 0.20 + 0.20 + 0.15 + 0.10 + 0.10 = 1.00$)*
+- **Unreadable Field Scoring Semantics (Step 4.2):**
+  - Unreadable fields calculate evidence quality dynamically using the documented weighted framework where meaningful:
+    $$\text{Score} = (0.20 \times \text{source\_quality}) + (0.20 \times \text{label\_match}) + (0.15 \times \text{provenance\_quality})$$
+    ($w_F=0.0$, $w_N=0.0$, $w_A=0.0$).
+  - Status is strictly and mandatorily `FieldStatus.UNREADABLE`.
+  - Explanations explicitly clarify that the score measures evidence anchor quality (how reliably the label and region were anchored), not confidence in a recovered value (since no value was extracted).
 - **Worked Examples:**
   - *Digital PDF GSTIN (Clear text, exact label, valid format, full provenance):*
     $\text{Score} = (0.25 \times 1.0) + (0.20 \times 0.98) + (0.20 \times 1.0) + (0.15 \times 1.0) + (0.10 \times 1.0) + (0.10 \times 1.0) = 0.996 \approx 1.00 \to \text{EXTRACTED}$.
   - *Scanned OCR GSTIN (Word-token confidence 0.65, valid format, full provenance):*
     $\text{Score} = (0.25 \times 1.0) + (0.20 \times 0.65) + (0.20 \times 1.0) + (0.15 \times 1.0) + (0.10 \times 1.0) + (0.10 \times 1.0) = 0.930 \to \text{EXTRACTED}$.
-  - *OCR Scan with Character Repair (`O` $\to$ `0`, norm = 0.80, token conf 0.50):*
-    $\text{Score} = (0.25 \times 1.0) + (0.20 \times 0.50) + (0.20 \times 1.0) + (0.15 \times 1.0) + (0.10 \times 0.80) + (0.10 \times 1.0) = 0.880 \to \text{NEEDS\_REVIEW}$ *(flagged due to character repair)*.
-  - *Ambiguous Date (`03/04/2024`, norm = 0.50, digital text):*
-    $\text{Score} = (0.25 \times 1.0) + (0.20 \times 0.98) + (0.20 \times 1.0) + (0.15 \times 1.0) + (0.10 \times 0.50) + (0.10 \times 1.0) = 0.946 \approx 0.95 \to \text{NEEDS\_REVIEW}$ *(flagged due to ambiguity)*.
+  - *Unreadable Field with High-Confidence Label ($S=0.95, L=1.00, P=1.00$):*
+    $\text{Score} = (0.20 \times 0.95) + (0.20 \times 1.00) + (0.15 \times 1.00) = 0.19 + 0.20 + 0.15 = 0.54 \to \text{UNREADABLE}$.
+  - *Unreadable Field with Low-Confidence Label ($S=0.40, L=1.00, P=1.00$):*
+    $\text{Score} = (0.20 \times 0.40) + (0.20 \times 1.00) + (0.15 \times 1.00) = 0.08 + 0.20 + 0.15 = 0.43 \to \text{UNREADABLE}$.
 - **Presentation Disclaimer:** Explicitly documented as **"Extraction Quality Score"** or **"Evidence Quality"** measuring signal alignment and format validity—**never** labeled as a statistical probability of document authenticity or external legal validity.
 - **Explainable Thresholds:**
   - $\ge 0.75$: `EXTRACTED` (High confidence).

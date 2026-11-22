@@ -231,7 +231,7 @@ class TestCompositeScoreFormula:
         assert assessment.quality_score == 0.0
         assert assessment.status == FieldStatus.MISSING
 
-    def test_unreadable_field_score_is_twenty_percent(self):
+    def test_unreadable_field_score_weighted_calculation(self):
         assessment = quality_assessor.evaluate_field(
             field_name="legal_entity_name",
             value=None,
@@ -249,7 +249,8 @@ class TestCompositeScoreFormula:
             has_snippet=True,
             is_unreadable=True,
         )
-        assert assessment.quality_score == 0.20
+        # In Step 4.2: 0.20*0.40 (source) + 0.20*1.00 (label) + 0.15*1.00 (prov) = 0.43
+        assert assessment.quality_score == 0.43
         assert assessment.status == FieldStatus.UNREADABLE
 
 

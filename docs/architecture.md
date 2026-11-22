@@ -579,9 +579,9 @@ When a document lacks expected fields (such as a tax certificate with registrati
 
 ---
 
-## 14. Phase 2 — Step 4 & 4.1: Extraction Confidence, Normalization & Evidence Hardening Architecture
+## 14. Phase 2 — Steps 4, 4.1 & 4.2: Extraction Confidence, Evidence Quality & Hardening Architecture
 
-Phase 2, Steps 4 and 4.1 strengthen the document extraction pipeline by implementing explainable, signal-grounded confidence scores, a dedicated normalization layer, honest provenance integrity, token-level OCR confidence, calendar date validation, and hardened original document preview protection.
+Phase 2, Steps 4, 4.1, and 4.2 strengthen the document extraction pipeline by implementing explainable, signal-grounded confidence scores, a dedicated normalization layer, honest provenance integrity, token-level OCR confidence, calendar date validation, multi-line token isolation, unreadable evidence scoring, and hardened original document preview protection.
 
 ### A. Core Architecture & Separation of Concerns
 - **`backend/app/extraction/confidence.py` (`QualityAssessor`):**
@@ -595,9 +595,11 @@ Phase 2, Steps 4 and 4.1 strengthen the document extraction pipeline by implemen
     - `provenance_quality` ($w_P = 0.15$): Page identified ($+0.50$), location line ($+0.30$), verbatim snippet ($+0.20$).
     - `normalization_adjustment` ($w_N = 0.10$): Baseline $1.00$ minus deductions ($-0.50$ for ambiguous date, $-0.20$ for OCR character repair).
     - `ambiguity_penalty` ($w_A = 0.10$): Single candidate ($1.00$), multiple competing candidates in document ($0.60$).
-  - **Special Statuses:**
+  - **Special Statuses & Semantics:**
     - `MISSING`: Quality score is strictly $0.00$ ($S=0, L=0, F=0, P=0, N=0, A=1.00$). Source is `None`.
-    - `UNREADABLE`: Quality score is $0.20$. Captures label and region while indicating illegible text.
+    - `UNREADABLE`: In Step 4.2, unreadable fields evaluate dynamic evidence quality using the documented weighted formula where meaningful:
+      $$\text{Score} = (0.20 \times \text{source\_quality}) + (0.20 \times \text{label\_match}) + (0.15 \times \text{provenance\_quality})$$
+      ($w_F=0.0$, $w_N=0.0$, $w_A=0.0$). Mandatory `FieldStatus.UNREADABLE` is preserved regardless of score. The score explicitly measures evidence anchor and location quality (how clearly the label and region were anchored), not confidence in a recovered value (since no value was extracted).
   - **Transparent Presentation:** Documented strictly as "Extraction Quality Score" or "Evidence Quality" representing signal alignment and structural validity—never labeled as a statistical probability or a guarantee of external authenticity.
   - **Explainable Thresholds:** $\ge 0.75 \to \text{EXTRACTED}$; $< 0.75 \to \text{NEEDS\_REVIEW}$ with documented rationale.
 - **`backend/app/extraction/ocr_engine.py` (`OcrEngine` & `OcrToken`):**
@@ -607,6 +609,11 @@ Phase 2, Steps 4 and 4.1 strengthen the document extraction pipeline by implemen
   - Page-level confidence is retained exclusively as a fallback when token data is missing, clearly documented in the quality explanation.
   - Digital PDFs preserve digital text stream fidelity ($0.98$) without inventing OCR tokens.
   - Zero raw OCR tokens or sensitive internal coordinates are exposed through public APIs.
+- **`backend/app/extraction/parsers.py` (`DocumentParser`):**
+  - **Multi-Line Token Association (Step 4.2):** When a label is on one line and value is on the next line, the parser isolates tokens strictly belonging to the candidate value (e.g. `29ABCDE1234F1Z5` or `Acme Global Pvt. Ltd.`) and ignores trailing annotations, notes, or low-confidence noise tokens.
+  - Preserves label tokens separately from value tokens.
+  - Handles intra-word and token punctuation (slashes in dates, commas, periods in corporate entities).
+  - Preserves exact multi-line page and line provenance (e.g. `Page 1, Lines 1-2`) without persisting raw token text.
 - **`backend/app/extraction/normalization.py`:**
   - Dedicated normalization functions (`normalize_gstin`, `normalize_date`, `normalize_entity_name`, `normalize_address`, `normalize_ifsc`, `normalize_account_number`).
   - **Calendar Date Validation:** All date normalization branches validate real calendar dates via `datetime.date(year, month, day)`. Non-existent dates like `31/04/2024`, non-leap-year `29/02/2023`, or `2024-04-31` fail validation (`is_valid_format = False`) with clear error notes.
