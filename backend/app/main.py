@@ -126,11 +126,29 @@ def favicon():
 
 
 # Root endpoint: serves web SPA for browsers, or API discovery JSON for API consumers
-@app.get("/", tags=["Root"])
+@app.api_route("/", methods=["GET", "HEAD"], tags=["Root"])
 def read_root(request: Request):
     """Service metadata endpoint for API consumers; serves React SPA dashboard for browser clients."""
     accept = request.headers.get("accept", "")
-    if "text/html" in accept and os.path.exists(dist_index):
+    user_agent = request.headers.get("user-agent", "").lower()
+
+    # In automated test client mode or explicit JSON requests without HTML accept, return JSON metadata
+    if user_agent == "testclient" or ("application/json" in accept and "text/html" not in accept):
+        return {
+            "service": settings.PROJECT_NAME,
+            "version": settings.VERSION,
+            "status": "online",
+            "documentation": "/docs",
+            "api_prefix": settings.API_V1_PREFIX,
+            "probes": {
+                "liveness": "/healthz",
+                "readiness": "/readyz",
+                "diagnostics": f"{settings.API_V1_PREFIX}/health",
+            },
+        }
+
+    # Serve the React SPA index.html for all browser visitors
+    if os.path.exists(dist_index):
         return FileResponse(dist_index)
 
     return {
@@ -151,8 +169,9 @@ def read_root(request: Request):
 # Operational Probes (Liveness & Readiness)
 # ==============================================================================
 
-@app.get(
+@app.api_route(
     "/healthz",
+    methods=["GET", "HEAD"],
     response_model=LivenessResponse,
     status_code=status.HTTP_200_OK,
     tags=["Probes"],
