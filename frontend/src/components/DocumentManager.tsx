@@ -14,9 +14,12 @@ import {
   Sparkles,
   ChevronDown,
   ChevronRight,
+  ChevronLeft,
   AlertTriangle,
   Info,
   FileSearch,
+  Eye,
+  X,
 } from 'lucide-react';
 import {
   VendorDocumentResponse,
@@ -24,12 +27,14 @@ import {
   ClassificationStatus,
   ExtractionStatus,
   FieldStatus,
+  ExtractedField,
   fetchVendorDocuments,
   uploadVendorDocument,
   downloadVendorDocument,
   deleteVendorDocument,
   classifyVendorDocument,
   extractVendorDocument,
+  getDocumentPagePreviewUrl,
 } from '../config/api';
 
 interface DocumentManagerProps {
@@ -71,6 +76,17 @@ export const DocumentManager: React.FC<DocumentManagerProps> = ({
   const [expandedClassificationId, setExpandedClassificationId] = useState<string | null>(null);
   const [extractingId, setExtractingId] = useState<string | null>(null);
   const [expandedExtractionId, setExpandedExtractionId] = useState<string | null>(null);
+
+  // Original Document Page Preview Modal State
+  const [pagePreview, setPagePreview] = useState<{
+    documentId: string;
+    documentName: string;
+    pageNumber: number;
+    fieldName?: string;
+    field?: ExtractedField | null;
+  } | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -348,6 +364,46 @@ export const DocumentManager: React.FC<DocumentManagerProps> = ({
       default:
         return null;
     }
+  };
+
+  const getQualityBadge = (field: ExtractedField) => {
+    const score = field.quality_score ?? field.confidence;
+    if (score === null || score === undefined || field.status === 'MISSING') {
+      return null;
+    }
+    const pct = Math.round(score * 100);
+    let colorClass = 'bg-emerald-50 text-emerald-800 border-emerald-200';
+    if (pct < 50 || field.status === 'UNREADABLE') {
+      colorClass = 'bg-rose-50 text-rose-800 border-rose-200';
+    } else if (pct < 75 || field.status === 'NEEDS_REVIEW') {
+      colorClass = 'bg-amber-50 text-amber-800 border-amber-200';
+    }
+
+    return (
+      <span
+        className={`inline-flex items-center px-1.5 py-0.2 rounded text-[10px] font-mono font-medium border ${colorClass} cursor-help`}
+        title={`Evidence Quality Score: ${pct}%\n${field.quality_explanation || ''}`}
+      >
+        {pct}% Quality
+      </span>
+    );
+  };
+
+  const handleOpenPreview = (
+    doc: VendorDocumentResponse,
+    pageNumber: number = 1,
+    fieldName?: string,
+    field?: ExtractedField
+  ) => {
+    setPreviewError(null);
+    setPreviewLoading(true);
+    setPagePreview({
+      documentId: doc.id,
+      documentName: doc.original_filename,
+      pageNumber: Math.max(1, pageNumber),
+      fieldName,
+      field,
+    });
   };
 
   const formatFieldName = (name: string): string => {
@@ -817,7 +873,7 @@ export const DocumentManager: React.FC<DocumentManagerProps> = ({
                                 Structured Information & Provenance (Schema: {CATEGORY_LABELS[ext.document_category_used as DocumentCategory] || ext.document_category_used} • OCR Engine v{ext.ocr_engine_version})
                               </span>
                               <span className="text-slate-400 font-mono text-[10px]">
-                                {new Date(ext.extracted_at).toLocaleString()}
+                                {new Date(ext.extracted_at || ext.created_at || Date.now()).toLocaleString()}
                               </span>
                             </div>
 
@@ -849,20 +905,23 @@ export const DocumentManager: React.FC<DocumentManagerProps> = ({
                                         {formatFieldName(fieldName)}
                                       </td>
                                       <td className="px-3 py-2 align-top text-xs">
-                                        {field.status === 'EXTRACTED' ? (
-                                          <div className="flex items-center gap-1.5">
-                                            <span className="font-mono text-slate-900 font-medium select-all">
-                                              {field.masked_value || field.value}
-                                            </span>
-                                            {field.confidence !== undefined && field.confidence !== null && (
-                                              <span className="text-[10px] text-slate-400 font-mono">
-                                                ({Math.round(field.confidence * 100)}%)
+                                        {field.status === 'EXTRACTED' || field.status === 'NEEDS_REVIEW' ? (
+                                          <div className="space-y-1">
+                                            <div className="flex items-center gap-1.5 flex-wrap">
+                                              <span className="font-mono text-slate-900 font-medium select-all">
+                                                {field.masked_value || field.value}
                                               </span>
+                                              {getQualityBadge(field)}
+                                            </div>
+                                            {field.normalization_notes && (
+                                              <div className="text-[10px] text-amber-800 bg-amber-50/70 px-1.5 py-0.5 rounded border border-amber-200/50">
+                                                <span className="font-semibold">Note:</span> {field.normalization_notes}
+                                              </div>
                                             )}
                                           </div>
                                         ) : (
                                           <span className="text-slate-400 italic text-[11px]">
-                                            {field.limitation_or_reason || 'Not available'}
+                                            {field.limitation_or_reason || (field.status === 'UNREADABLE' ? 'Unreadable text in document' : 'Field not present')}
                                           </span>
                                         )}
                                       </td>
@@ -870,25 +929,42 @@ export const DocumentManager: React.FC<DocumentManagerProps> = ({
                                         {getFieldStatusBadge(field.status)}
                                       </td>
                                       <td className="px-3 py-2 align-top text-[11px] text-slate-600 space-y-1">
-                                        {field.status === 'EXTRACTED' ? (
+                                        {field.source ? (
                                           <>
                                             <div className="flex items-center gap-1.5 flex-wrap text-[10px]">
-                                              <span className="font-semibold text-slate-700">
-                                                Page {field.source.page_number}
-                                              </span>
-                                              <span>•</span>
-                                              <span className="font-mono bg-slate-100 text-slate-600 px-1 py-0.2 rounded border border-slate-200">
-                                                {field.source.extraction_method}
-                                              </span>
+                                              {field.source.page_number && (
+                                                <span className="font-semibold text-slate-700">
+                                                  Page {field.source.page_number}
+                                                </span>
+                                              )}
+                                              {field.source.extraction_method && (
+                                                <>
+                                                  <span>•</span>
+                                                  <span className="font-mono bg-slate-100 text-slate-600 px-1 py-0.2 rounded border border-slate-200">
+                                                    {field.source.extraction_method}
+                                                  </span>
+                                                </>
+                                              )}
                                               {field.source.evidence_location && (
                                                 <>
                                                   <span>•</span>
                                                   <span className="text-slate-500">{field.source.evidence_location}</span>
                                                 </>
                                               )}
+                                              {field.source.page_number && (
+                                                <button
+                                                  type="button"
+                                                  onClick={() => handleOpenPreview(doc, field.source?.page_number || 1, fieldName, field)}
+                                                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-sky-50 text-sky-700 hover:bg-sky-100 border border-sky-200 transition-colors ml-auto cursor-pointer"
+                                                  title="Inspect evidence on original document page"
+                                                >
+                                                  <Eye className="w-3 h-3 text-sky-600" />
+                                                  <span>Inspect Page</span>
+                                                </button>
+                                              )}
                                             </div>
                                             {field.source.evidence_snippet && (
-                                              <div className="font-mono text-[10px] text-slate-600 bg-slate-50 p-1.5 rounded border border-slate-200/70 max-w-md truncate">
+                                              <div className="font-mono text-[10px] text-slate-600 bg-slate-50 p-1.5 rounded border border-slate-200/70 max-w-md truncate" title={field.source.evidence_snippet}>
                                                 &ldquo;{field.source.evidence_snippet}&rdquo;
                                               </div>
                                             )}
@@ -905,9 +981,11 @@ export const DocumentManager: React.FC<DocumentManagerProps> = ({
                               </table>
                             </div>
 
-                            <div className="text-[10px] text-slate-400 flex items-center justify-between border-t border-indigo-100/70 pt-1">
-                              <span>Document-specific deterministic field parser with OCR fallback.</span>
-                              <span className="italic">Sensitive banking credentials automatically masked by default.</span>
+                            <div className="text-[10px] text-slate-500 flex items-center justify-between border-t border-indigo-100/70 pt-2 flex-wrap gap-2">
+                              <span>Deterministic field parsing & evidence quality scoring (Engine v{ext.extraction_engine_version || ext.ocr_engine_version || '2.0.0'}).</span>
+                              <span className="font-medium text-amber-800 bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
+                                Evidence Inspection Only: Extracted data does not overwrite vendor records.
+                              </span>
                             </div>
                           </div>
                         </td>
@@ -920,6 +998,199 @@ export const DocumentManager: React.FC<DocumentManagerProps> = ({
           </table>
         )}
       </div>
+
+      {/* Original Document Evidence & Page Inspection Modal */}
+      {pagePreview && (
+        <div
+          className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 cursor-pointer"
+          onClick={() => setPagePreview(null)}
+          role="dialog"
+          aria-modal="true"
+        >
+          <div
+            className="bg-white rounded-xl shadow-2xl border border-slate-200 max-w-5xl w-full max-h-[92vh] flex flex-col overflow-hidden animate-in fade-in-0 duration-150 cursor-default"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Modal Header */}
+            <div className="px-5 py-3.5 border-b border-slate-200 flex items-center justify-between bg-slate-50/80">
+              <div className="flex items-center gap-2">
+                <FileSearch className="w-4 h-4 text-sky-600" />
+                <h3 className="text-sm font-bold text-slate-800">
+                  Document Evidence & Original Page Inspection
+                </h3>
+                <span className="text-[11px] font-mono text-slate-500 bg-slate-200/70 px-2 py-0.5 rounded">
+                  {pagePreview.documentName}
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPagePreview(null)}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium bg-slate-100 hover:bg-slate-200 text-slate-700 transition-colors cursor-pointer"
+                >
+                  <X className="w-3.5 h-3.5" />
+                  <span>Close</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Sub-header / Navigation */}
+            <div className="px-5 py-2 border-b border-slate-200 bg-white flex items-center justify-between text-xs">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled={pagePreview.pageNumber <= 1}
+                  onClick={() => {
+                    setPreviewLoading(true);
+                    setPreviewError(null);
+                    setPagePreview(prev => prev ? { ...prev, pageNumber: prev.pageNumber - 1 } : null);
+                  }}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-semibold bg-slate-100 hover:bg-slate-200 text-slate-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors cursor-pointer"
+                >
+                  <ChevronLeft className="w-3.5 h-3.5" />
+                  <span>Previous Page</span>
+                </button>
+                <span className="font-semibold text-slate-700 text-xs px-2 py-1 bg-slate-50 rounded border border-slate-200">
+                  Page {pagePreview.pageNumber}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPreviewLoading(true);
+                    setPreviewError(null);
+                    setPagePreview(prev => prev ? { ...prev, pageNumber: prev.pageNumber + 1 } : null);
+                  }}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-semibold bg-slate-100 hover:bg-slate-200 text-slate-700 transition-colors cursor-pointer"
+                >
+                  <span>Next Page</span>
+                  <ChevronRight className="w-3.5 h-3.5" />
+                </button>
+              </div>
+
+              {pagePreview.fieldName && (
+                <div className="text-xs text-slate-600 flex items-center gap-1.5">
+                  <span className="text-slate-400">Inspecting:</span>
+                  <span className="font-semibold text-slate-800">{formatFieldName(pagePreview.fieldName)}</span>
+                </div>
+              )}
+            </div>
+
+            {/* Modal Body */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 p-5 overflow-y-auto max-h-[calc(92vh-140px)] bg-slate-50">
+              {/* Left Column: Rendered Page Canvas */}
+              <div className="lg:col-span-7 bg-white p-3 rounded-lg border border-slate-200 flex flex-col items-center justify-center min-h-[460px] relative shadow-xs">
+                {previewLoading && (
+                  <div className="absolute inset-0 bg-white/80 backdrop-blur-xs flex items-center justify-center z-10">
+                    <div className="flex flex-col items-center gap-2">
+                      <Loader2 className="w-6 h-6 animate-spin text-sky-600" />
+                      <span className="text-xs text-slate-500 font-medium">Rendering page in memory...</span>
+                    </div>
+                  </div>
+                )}
+                {previewError ? (
+                  <div className="p-4 text-center space-y-2">
+                    <AlertTriangle className="w-8 h-8 text-amber-500 mx-auto" />
+                    <p className="text-xs text-slate-700 font-medium">{previewError}</p>
+                    <p className="text-[11px] text-slate-400">No further pages available in document.</p>
+                  </div>
+                ) : (
+                  <img
+                    src={getDocumentPagePreviewUrl(vendorId, pagePreview.documentId, pagePreview.pageNumber)}
+                    alt={`Document Page ${pagePreview.pageNumber}`}
+                    className="max-h-[580px] w-auto object-contain rounded border border-slate-200 shadow-sm select-none"
+                    onLoad={() => setPreviewLoading(false)}
+                    onError={() => {
+                      setPreviewLoading(false);
+                      setPreviewError("Page preview could not be loaded or page does not exist.");
+                    }}
+                  />
+                )}
+              </div>
+
+              {/* Right Column: Evidence & Field Quality Details */}
+              <div className="lg:col-span-5 space-y-3">
+                {pagePreview.field ? (
+                  <div className="bg-white p-4 rounded-lg border border-slate-200 shadow-xs space-y-3">
+                    <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                      <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wider">
+                        {formatFieldName(pagePreview.fieldName || 'Field Evidence')}
+                      </h4>
+                      {getFieldStatusBadge(pagePreview.field.status)}
+                    </div>
+
+                    <div>
+                      <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
+                        Extracted Value (Masked)
+                      </span>
+                      <div className="font-mono text-sm bg-slate-50 p-2 rounded-md border border-slate-200 text-slate-900 font-bold select-all">
+                        {pagePreview.field.masked_value || pagePreview.field.value || 'None'}
+                      </div>
+                    </div>
+
+                    {/* Quality Assessment Card */}
+                    <div className="p-2.5 rounded-md bg-indigo-50/50 border border-indigo-100 space-y-1.5">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="font-semibold text-indigo-900">Evidence Quality</span>
+                        {getQualityBadge(pagePreview.field)}
+                      </div>
+                      {pagePreview.field.quality_explanation && (
+                        <p className="text-[11px] text-slate-600">
+                          {pagePreview.field.quality_explanation}
+                        </p>
+                      )}
+                      {pagePreview.field.quality_breakdown && (
+                        <div className="grid grid-cols-2 gap-1 text-[10px] font-mono text-slate-500 pt-1 border-t border-indigo-100/60">
+                          <div>Source Fidelity: {Math.round(pagePreview.field.quality_breakdown.source_quality * 100)}%</div>
+                          <div>Label Match: {Math.round(pagePreview.field.quality_breakdown.label_match * 100)}%</div>
+                          <div>Format Valid: {Math.round(pagePreview.field.quality_breakdown.format_validity * 100)}%</div>
+                          <div>Normalization: {Math.round(pagePreview.field.quality_breakdown.normalization_adjustment * 100)}%</div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Normalization Note */}
+                    {pagePreview.field.normalization_notes && (
+                      <div className="p-2 rounded-md bg-amber-50 border border-amber-200 text-amber-800 text-xs">
+                        <span className="font-semibold">Normalization Note:</span> {pagePreview.field.normalization_notes}
+                      </div>
+                    )}
+
+                    {/* Source Evidence */}
+                    <div>
+                      <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
+                        Source Evidence Snippet
+                      </span>
+                      <div className="font-mono text-[11px] text-slate-700 bg-slate-50 p-2.5 rounded-md border border-slate-200 whitespace-pre-wrap">
+                        &ldquo;{pagePreview.field.source?.evidence_snippet || 'No snippet available'}&rdquo;
+                      </div>
+                      {pagePreview.field.source?.evidence_location && (
+                        <span className="block text-[10px] text-slate-500 mt-1">
+                          Location: {pagePreview.field.source.evidence_location}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="bg-white p-4 rounded-lg border border-slate-200 text-center text-xs text-slate-500">
+                    Select a field from the extraction table to view specific evidence details.
+                  </div>
+                )}
+
+                {/* Strict Compliance Non-Mutation Notice */}
+                <div className="p-3 rounded-lg bg-slate-100 border border-slate-200 text-[11px] text-slate-600 space-y-1">
+                  <div className="flex items-center gap-1.5 font-semibold text-slate-700">
+                    <Shield className="w-3.5 h-3.5 text-sky-600 shrink-0" />
+                    <span>Evidence-Only Principle</span>
+                  </div>
+                  <p className="text-[10px] text-slate-500 leading-relaxed">
+                    Extracted values are structured evidence for operator review. Extraction never alters vendor-submitted fields, mutates approval status, or overwrites database records.
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

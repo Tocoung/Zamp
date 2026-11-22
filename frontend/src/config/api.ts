@@ -783,12 +783,22 @@ export type FieldStatus = 'EXTRACTED' | 'MISSING' | 'UNREADABLE' | 'NEEDS_REVIEW
 
 export type ExtractionStatus = 'COMPLETED' | 'PARTIAL' | 'INSUFFICIENT_TEXT' | 'FAILED';
 
+export interface QualityBreakdown {
+  source_quality: number;
+  label_match: number;
+  format_validity: number;
+  normalization_adjustment: number;
+  ambiguity_penalty: number;
+  provenance_quality: number;
+}
+
 export interface FieldSource {
-  document_id: string;
-  page_number: number;
-  extraction_method: 'DIGITAL_TEXT' | 'OCR';
+  document_id?: string | null;
+  page_number?: number | null;
+  extraction_method?: 'DIGITAL_TEXT' | 'OCR' | string | null;
   evidence_location?: string | null;
   evidence_snippet?: string | null;
+  bounding_box?: Record<string, number> | null;
 }
 
 export interface ExtractedField {
@@ -796,8 +806,12 @@ export interface ExtractedField {
   value?: string | null;
   masked_value?: string | null;
   status: FieldStatus;
+  quality_score?: number | null;
   confidence?: number | null;
-  source: FieldSource;
+  quality_breakdown?: QualityBreakdown | null;
+  quality_explanation?: string | null;
+  normalization_notes?: string | null;
+  source?: FieldSource | null;
   limitation_or_reason?: string | null;
 }
 
@@ -809,10 +823,21 @@ export interface DocumentExtractionResponse {
   status: ExtractionStatus;
   fields: Record<string, ExtractedField>;
   extracted_fields_count: number;
+  needs_review_fields_count?: number;
   limitation_code?: string | null;
   limitation_reason?: string | null;
-  ocr_engine_version: string;
-  extracted_at: string;
+  extraction_engine_version: string;
+  ocr_engine_version?: string;
+  extracted_at?: string;
+  created_at?: string;
+}
+
+export function getDocumentPagePreviewUrl(
+  vendorId: string,
+  documentId: string,
+  pageNumber: number = 1
+): string {
+  return `${API_BASE_URL}/vendors/${vendorId}/documents/${documentId}/pages/${pageNumber}/preview`;
 }
 
 export interface DocumentExtractionHistoryPagination {

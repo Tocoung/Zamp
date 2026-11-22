@@ -19,6 +19,7 @@ from app.services.extraction_service import (
     extraction_service,
     ExtractionServiceError,
     ExtractionNotFoundError,
+    DocumentPreviewError,
 )
 from app.services.document_service import (
     document_service,
@@ -489,3 +490,51 @@ def list_vendor_extractions(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to list vendor extractions ({type(e).__name__}).",
         )
+
+
+@router.get(
+    "/{document_id}/pages/{page_number}/preview",
+    status_code=status.HTTP_200_OK,
+    summary="Preview Original Document Page",
+    description="Renders a specific page of an original document as an image for operator evidence inspection.",
+)
+def preview_document_page(
+    vendor_id: str,
+    document_id: str,
+    page_number: int,
+    db: Session = Depends(get_db),
+) -> Response:
+    """Render original document page dynamically in memory for operator inspection."""
+    try:
+        img_bytes, mime_type, total_pages = extraction_service.render_document_page_preview(
+            db=db, vendor_id=vendor_id, document_id=document_id, page_number=page_number
+        )
+        return Response(
+            content=img_bytes,
+            media_type=mime_type,
+            headers={
+                "Cache-Control": "private, no-store, max-age=0",
+                "X-Content-Type-Options": "nosniff",
+                "X-Total-Pages": str(total_pages),
+                "X-Current-Page": str(page_number),
+            },
+        )
+    except DocumentNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Document '{document_id}' not found for vendor '{vendor_id}'.",
+        )
+    except DocumentPreviewError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except ExtractionServiceError as e:
+        detail_msg = str(e)
+        if "not found" in detail_msg.lower():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail_msg)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=detail_msg,
+        )
+

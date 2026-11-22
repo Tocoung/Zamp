@@ -1,8 +1,17 @@
-"""Extraction service coordinating OCR, structured field parsing, persistence, and audit activities."""
+"""Extraction service coordinating OCR, structured field parsing, persistence, audit activities, and page preview."""
 
+import io
 from typing import List, Optional, Tuple
 from sqlalchemy import select, func, desc
 from sqlalchemy.orm import Session
+from pypdf import PdfReader
+
+try:
+    import pdf2image
+    from PIL import Image
+    HAS_PREVIEW_IMAGING = True
+except ImportError:
+    HAS_PREVIEW_IMAGING = False
 
 from app.models.vendor import Vendor
 from app.models.document import VendorDocument
@@ -28,6 +37,11 @@ class ExtractionServiceError(Exception):
 
 class ExtractionNotFoundError(ExtractionServiceError):
     """Raised when an extraction result is not found."""
+    pass
+
+
+class DocumentPreviewError(ExtractionServiceError):
+    """Raised when an original document page preview cannot be rendered."""
     pass
 
 
@@ -68,7 +82,6 @@ class ExtractionService:
         if category_override and str(category_override).strip():
             category_used = str(category_override).strip().upper()
         else:
-            # Check latest classification result as a guiding hint if available
             latest_cls = doc.latest_classification
             if (
                 latest_cls
@@ -83,7 +96,7 @@ class ExtractionService:
         # 5. Execute OCR / text recognition pipeline
         ocr_result = self.ocr.process(content, doc.mime_type, doc.original_filename)
 
-        # 6. Execute deterministic schema parser
+        # 6. Execute deterministic schema parser with explainable confidence assessment
         parsed_fields = self.parser.parse(
             document_id=str(document_id),
             category=category_used,
@@ -92,6 +105,7 @@ class ExtractionService:
 
         # 7. Evaluate overall extraction run status
         extracted_count = sum(1 for f in parsed_fields.values() if f.status == FieldStatus.EXTRACTED)
+        needs_review_count = sum(1 for f in parsed_fields.values() if f.status == FieldStatus.NEEDS_REVIEW)
 
         if ocr_result.limitation_code in (
             ExtractionLimitationCode.ENCRYPTED_PDF.value,
@@ -109,7 +123,7 @@ class ExtractionService:
         elif extracted_count == len(parsed_fields) and len(parsed_fields) > 0:
             status = ExtractionStatus.COMPLETED
             limitation_code = None
-        elif extracted_count > 0:
+        elif extracted_count > 0 or needs_review_count > 0:
             status = ExtractionStatus.PARTIAL
             limitation_code = None
         else:
@@ -127,20 +141,21 @@ class ExtractionService:
             status=status.value,
             fields=fields_json,
             extracted_fields_count=extracted_count,
-            extraction_engine_version="1.0.0",
+            extraction_engine_version="2.0.0",
             limitation_code=limitation_code,
         )
         db.add(extraction)
 
         # 10. Record safe lifecycle activity event
         safe_filename = sanitize_filename_for_activity(doc.sanitized_filename)
+        review_note = f", {needs_review_count} needs review" if needs_review_count > 0 else ""
         activity = VendorActivity(
             vendor_id=str(vendor.id),
             event_type="DOCUMENT_EXTRACTED",
             title="Document Information Extracted",
             description=(
                 f"Document '{safe_filename}' extracted as {category_used} "
-                f"[{status.value}, {extracted_count}/{len(parsed_fields)} fields extracted]."
+                f"[{status.value}, {extracted_count}/{len(parsed_fields)} fields extracted{review_note}]."
             ),
             status=status.value,
         )
@@ -150,16 +165,85 @@ class ExtractionService:
             db.commit()
             db.refresh(extraction)
             logger.info(
-                "Document '%s' successfully extracted: status=%s, fields=%d",
+                "Document '%s' successfully extracted: status=%s, fields=%d, needs_review=%d",
                 document_id,
                 status.value,
                 extracted_count,
+                needs_review_count,
             )
             return extraction
         except Exception as e:
             db.rollback()
             logger.error("Failed to persist document extraction: %s", type(e).__name__)
             raise ExtractionServiceError(f"Failed to persist extraction result ({type(e).__name__}).")
+
+    def render_document_page_preview(
+        self,
+        db: Session,
+        vendor_id: str,
+        document_id: str,
+        page_number: int = 1,
+    ) -> Tuple[bytes, str, int]:
+        """Renders a single page of an original document as a PNG image in memory.
+        
+        Returns:
+            Tuple[image_bytes, mime_type, total_pages]
+        """
+        if page_number < 1:
+            raise DocumentPreviewError("Page number must be at least 1.")
+
+        doc = db.get(VendorDocument, str(document_id))
+        if not doc or str(doc.vendor_id) != str(vendor_id):
+            raise ExtractionServiceError(f"Document '{document_id}' not found for vendor '{vendor_id}'.")
+
+        try:
+            content = self.storage.retrieve_document(doc.storage_identifier)
+        except Exception as e:
+            logger.error("Failed to retrieve decrypted document '%s' for preview: %s", document_id, type(e).__name__)
+            raise ExtractionServiceError(f"Failed to access document storage ({type(e).__name__}).")
+
+        norm_mime = str(doc.mime_type or "").strip().lower()
+
+        # 1. Image documents: serve the image bytes directly
+        if norm_mime in ("image/png", "image/jpeg", "image/jpg"):
+            if page_number != 1:
+                raise DocumentPreviewError(f"Image document only has 1 page (requested page {page_number}).")
+            return content, norm_mime, 1
+
+        # 2. PDF documents: render the requested page via pdf2image
+        if norm_mime == "application/pdf":
+            try:
+                reader = PdfReader(io.BytesIO(content))
+                total_pages = len(reader.pages)
+            except Exception as e:
+                raise DocumentPreviewError(f"Invalid or corrupted PDF document ({type(e).__name__}).")
+
+            if total_pages == 0:
+                raise DocumentPreviewError("Document contains zero pages.")
+            if page_number > total_pages:
+                raise DocumentPreviewError(f"Page {page_number} exceeds total document pages ({total_pages}).")
+
+            if not HAS_PREVIEW_IMAGING:
+                raise DocumentPreviewError("PDF preview rendering engine is unavailable on host.")
+
+            try:
+                images = pdf2image.convert_from_bytes(
+                    content,
+                    first_page=page_number,
+                    last_page=page_number,
+                    size=(1800, None),
+                )
+                if not images:
+                    raise DocumentPreviewError(f"Failed to render page {page_number}.")
+
+                img_buf = io.BytesIO()
+                images[0].save(img_buf, format="PNG")
+                return img_buf.getvalue(), "image/png", total_pages
+            except Exception as e:
+                logger.error("Failed to render PDF page %d preview: %s", page_number, type(e).__name__)
+                raise DocumentPreviewError(f"Failed to render page preview ({type(e).__name__}).")
+
+        raise DocumentPreviewError(f"Unsupported document mime type '{doc.mime_type}' for preview.")
 
     def get_latest_extraction(
         self,

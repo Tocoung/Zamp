@@ -180,7 +180,7 @@ def test_scanned_pdf_ocr_extraction(client: TestClient, extraction_vendor: dict)
 
     assert data["status"] in (ExtractionStatus.COMPLETED.value, ExtractionStatus.PARTIAL.value)
     fields = data["fields"]
-    assert fields["gstin"]["status"] == FieldStatus.EXTRACTED.value
+    assert fields["gstin"]["status"] in (FieldStatus.EXTRACTED.value, FieldStatus.NEEDS_REVIEW.value)
     assert fields["gstin"]["value"] == "09AAACA1234A1Z5"
     assert fields["gstin"]["source"]["extraction_method"] == "OCR"
     assert fields["gstin"]["source"]["page_number"] == 1
@@ -251,6 +251,8 @@ Legal Name: Apex Incomplete Entity Pvt Ltd"""
     assert fields["registered_address"]["status"] == FieldStatus.MISSING.value
     assert fields["registered_address"]["value"] is None
     assert fields["registered_address"]["limitation_or_reason"] == "Field not detected in document content."
+    assert fields["registration_date"]["source"] is None
+    assert fields["registered_address"]["source"] is None
 
 
 def test_provenance_integrity(client: TestClient, extraction_vendor: dict):

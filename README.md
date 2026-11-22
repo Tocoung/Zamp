@@ -1,8 +1,8 @@
 # Zamp — AI-Powered Vendor Onboarding Automation
 
 > **Case Study:** Zamp AI Solutions Analyst Case Study  
-> **Phase:** 2 (Step 3 — OCR & Structured Information Extraction)  
-> **Status:** Fully Integrated, Tested, and Verified (175 Automated Tests Passing)  
+> **Phase:** 2 (Step 4 — Extraction Confidence & Evidence Management)  
+> **Status:** Fully Integrated, Tested, and Verified (195 Automated Tests Passing)  
 
 An automated platform designed to streamline vendor company onboarding, compliance document intake & secure storage, multi-source verification, deterministic validation, explainable decisioning (`APPROVED` / `PENDING` / `REJECTED`), lifecycle activity tracking, and human-in-the-loop review.
 
@@ -12,17 +12,18 @@ An automated platform designed to streamline vendor company onboarding, complian
 
 The project uses a clean **Modular Monolith** architecture with decoupled presentation, validation, decision, document storage, activity, and service layers:
 
-- **Frontend:** React 18 + TypeScript + Vite + Tailwind CSS + Lucide React (Vendor intake form, vendor directory, full profile inspection, decision explanation, in-modal edit/correction mode, chronological activity timeline, supporting documents manager, document classifier, and structured extraction drawer with field provenance)
+- **Frontend:** React 18 + TypeScript + Vite + Tailwind CSS + Lucide React (Vendor intake form, vendor directory, full profile inspection, decision explanation, in-modal edit/correction mode, chronological activity timeline, supporting documents manager, document classifier, structured extraction drawer with field provenance, quality score badges, signal breakdowns, and original document page preview inspection modal)
 - **Backend:** Python 3.9+ + FastAPI + Pydantic v2 + Uvicorn + Cryptography (Fernet authenticated encryption at rest) + Tesseract OCR + Poppler + Pypdf
 - **Document Intake & Secure Storage:** Dedicated storage service (`backend/app/core/storage.py`) and validator (`backend/app/core/document_validator.py`) enforcing magic-byte inspection, bounded chunked streaming, atomic `.tmp` writes, path traversal prevention, authenticated symmetric encryption at rest (Fernet AES-128-CBC + HMAC-SHA256), and SHA-256 integrity checksums.
 - **Document Classification Engine:** Explainable rule-based categorization (`backend/app/classification/`) identifying document types (`TAX_CERTIFICATE`, `BANK_PROOF`, etc.) with transparent heuristic match scores and limitation codes.
 - **OCR & Structured Extraction Pipeline:** End-to-end multi-format text recognition and field extraction (`backend/app/extraction/`) supporting digital PDFs, scanned PDFs (rasterized page rendering + OCR), and standalone images (PNG/JPEG) with field-level provenance and PII masking.
+- **Extraction Confidence & Evidence Inspection:** Explainable quality assessment (`backend/app/extraction/confidence.py`), robust canonical normalization (`backend/app/extraction/normalization.py`), distinct field statuses (`EXTRACTED`, `NEEDS_REVIEW`, `MISSING`, `UNREADABLE`), in-memory page preview streaming (`GET .../pages/{page}/preview`), and strict non-mutation data integrity guarantees.
 - **Validation Engine:** Modular, decoupled rule engine (`backend/app/validation/`) evaluating 28 deterministic rules across required fields, country-aware statutory formats, and cross-field consistency.
 - **Decision Engine:** Deterministic business policy and explainability engine (`backend/app/decision/`) assigning `APPROVED`, `PENDING`, or `REJECTED` outcomes with stable reason codes and actionable recommendations.
 - **Activity & Lifecycle History:** Dedicated `vendor_activities` table tracking discrete lifecycle events (`VENDOR_SUBMITTED`, `DECISION_EXECUTED`, `VENDOR_UPDATED`, `DECISION_REEVALUATED`, `DOCUMENT_UPLOADED`, `DOCUMENT_DELETED`, `DOCUMENT_CLASSIFIED`, `DOCUMENT_EXTRACTED`) in deterministic chronological order with zero sensitive financial data leakage.
 - **Persistence:** SQLAlchemy 2.0 (Active: SQLite with deterministic path resolution; Production interface: PostgreSQL via `DATABASE_URL` with driver).
 - **Audit History:** Dedicated `vendor_decisions`, `vendor_documents`, `document_classifications`, and `document_extractions` tables preserving immutable audit records transactionally.
-- **Testing:** Pytest + FastAPI TestClient with temporary isolated SQLite databases and isolated storage directories (**175 automated tests passing**).
+- **Testing:** Pytest + FastAPI TestClient with temporary isolated SQLite databases and isolated storage directories (**195 automated tests passing**).
 
 Detailed architectural boundaries and module roadmaps can be found in [docs/architecture.md](docs/architecture.md).
 
@@ -515,6 +516,48 @@ Deterministic rules extract canonical key-value fields for each document categor
 
 ---
 
+## 6. Extraction Confidence, Normalization & Evidence Inspection (Step 4)
+
+Phase 2, Step 4 strengthens the extraction foundation by providing explainable, signal-grounded confidence scores, a dedicated normalization layer, honest provenance integrity, and interactive original document page inspection.
+
+### A. Explainable Quality Assessment (`app/extraction/confidence.py`)
+- **Measured Signals (Zero Hardcoded Constants):** Field confidence is calculated from six concrete, verifiable signals:
+  1. `source_quality`: Base clarity of the underlying text recognition (`1.0` for digital PDF, `0.85` for OCR).
+  2. `label_match`: Exactness of the detected identifier header or keyword label (`0.70` - `1.0`).
+  3. `format_validity`: Conformance of the extracted value to statutory regex or structural rules (`1.0` valid, `0.20` malformed).
+  4. `normalization_adjustment`: Penalty applied if value required OCR error correction (e.g. `O` $\leftrightarrow$ `0`) or trimming.
+  5. `ambiguity_penalty`: Deductions if multiple competing candidates were found or date formats are ambiguous (`0.30` - `0.45` penalty).
+  6. `provenance_quality`: Completeness of document coordinates, page numbers, and verbatim evidence snippets (`1.0`).
+- **Composite Quality Score:** Weighted formula:
+  $$\text{Composite} = (0.20 \times \text{source}) + (0.25 \times \text{label}) + (0.30 \times \text{format}) + (0.15 \times \text{provenance}) + (0.10 \times \text{norm}) - \text{penalty}$$
+- **Presentation Disclaimer:** Explicitly documented as **"Extraction Quality Score"** or **"Evidence Quality"** measuring signal alignment and format validity—**never** labeled as a statistical probability of document authenticity or external legal validity.
+- **Explainable Thresholds:**
+  - $\ge 0.75$: `EXTRACTED` (High confidence).
+  - $< 0.75$: `NEEDS_REVIEW` (Human review recommended with documented rationale).
+
+### B. Distinct 4-State Field Status Model
+1. **`EXTRACTED`:** Field located with high confidence ($\ge 0.75$), passing statutory format checks with clear evidence snippet.
+2. **`NEEDS_REVIEW`:** Field detected but confidence $< 0.75$, format validation failed, OCR character repair was applied, or date format is ambiguous.
+3. **`MISSING`:** Field was not detected in document content (`value=None`, `source=None`, `page_number=None`).
+4. **`UNREADABLE`:** Region detected with relevant labels, but content was garbled or below OCR confidence threshold (`limitation_or_reason="IMAGE_RESOLUTION_LOW"` or `"OCR_TEXT_GARBLED"`). Retains page number and region for human triage.
+
+### C. Canonical Normalization Layer (`app/extraction/normalization.py`)
+- **GSTIN Normalization (`normalize_gstin`):** Enforces 15-character statutory format. Tracks OCR character repairs (`O` $\leftrightarrow$ `0`, `I` $\leftrightarrow$ `1`), notes changes, and applies a confidence penalty.
+- **Date Normalization (`normalize_date`):** Standardizes valid dates into ISO 8601 (`YYYY-MM-DD`). Detects ambiguous slash dates (e.g. `03/04/2024` where day/month cannot be resolved without guessing) and sets `NEEDS_REVIEW` without fabricating assumptions.
+- **Legal Entity Names (`normalize_entity_name`):** Cleans excess whitespace while strictly preserving statutory corporate suffixes (`Pvt Ltd`, `LLC`, `Corp`, `Inc`) without aggressive title-casing.
+- **Addresses (`normalize_address`):** Reconnects hyphenated line breaks (`Indus-\ntrial` $\to$ `Industrial`) and standardizes spacing.
+- **Bank Identifiers (`normalize_ifsc`, `normalize_account_number`):** Normalizes 11-char IFSC codes and masks account numbers (`****1234`) with zero raw PII leaks.
+
+### D. Original Page Preview & Evidence Inspection Modal
+- **Dynamic On-Demand Page Rendering (`GET /pages/{page}/preview`):** Renders the requested document page in memory via `pdf2image` (`pdftoppm`) as a PNG stream with `Cache-Control: private, no-store`. Zero permanent disk plaintext.
+- **Access Control:** Validates document and vendor relationship; cross-vendor access is rejected with `HTTP 404`.
+- **Interactive UI Modal:**
+  - High-resolution document canvas with multi-page navigation controls.
+  - Evidence inspection side panel showing normalized value, status badge, quality percentage, signal breakdown, and verbatim evidence quote.
+  - **Evidence-Only Non-Mutation Principle:** Disclaims that extraction is structured evidence gathering only and never mutates vendor data or alters approval decisions.
+
+---
+
 ## 10. Health & Readiness Probes
 
 - **`GET /healthz` (Liveness):** Process check (`200 OK`, `{"status": "alive"}`).
@@ -528,9 +571,10 @@ Deterministic rules extract canonical key-value fields for each document categor
 ```bash
 PYTHONPATH=backend backend/.venv/bin/pytest backend/tests/ -v
 ```
-**Result:** **175 passed in 3.22s** (Exit code: `0`).
+**Result:** **195 passed in 71.81s** (Exit code: `0`).
 
 Includes complete coverage across:
+- `test_extraction_quality.py`: 20 new tests covering normalization (GSTIN, dates, names, addresses, IFSC, account masking), date ambiguity detection without guessing, OCR character repair penalties, unreadable field classification, signal breakdown calculation, explainable thresholds, deterministic reproducibility, and authenticated page preview API streaming.
 - `test_extraction.py`: 7 comprehensive extraction tests (digital PDF extraction, scanned PDF OCR rendering, image OCR recognition, missing field determinism, field-level provenance tracking, account number masking, cascade deletion, and vendor decision preservation).
 - `test_classification.py`: 17 comprehensive classification tests (digital PDF text extraction, empty/scanned PDF handling, image file rejection without OCR, incorporation/tax/bank/address rule scoring, ambiguous and conflicting signals, filename-only bounds, classify/get/history endpoints, cross-vendor isolation, and proof that vendor compliance status is unmutated).
 - `test_documents.py`: 30 tests covering intake validation, bounded chunked streaming, 10MB exact boundary and 1-byte overflow checks, path traversal and symlink rejection, sanitized error messages, two-phase staged deletion failure handling, database rollback recovery, and idempotent missing file deletion.
@@ -552,11 +596,11 @@ npm --prefix frontend run build
 
 ---
 
-## 12. Scope Boundaries & Deferred Capabilities (Beyond Phase 2, Step 3)
+## 12. Scope Boundaries & Deferred Capabilities (Beyond Phase 2, Step 4)
 
-In strict adherence to Phase 2, Step 3 boundaries, the following advanced capabilities are deliberately deferred to subsequent steps:
-- **Cross-Document Consistency Validation:** Automated reconciliation between document-extracted fields and vendor form fields (e.g. matching legal entity name on tax certificate vs bank statement vs web form) (Planned: Phase 2, Step 4).
-- **Discrepancy Detection & Highlighting:** Generating cross-document discrepancy flags and confidence scores for human reviewer triage (Planned: Phase 2, Step 4).
-- **Automated Document-Driven Compliance Decisioning:** Directly altering vendor approval status based on document contents (Planned: Phase 2, Step 4).
+In strict adherence to Phase 2, Step 4 boundaries, the following advanced capabilities are deliberately deferred to subsequent roadmap steps:
+- **Cross-Document Consistency Validation:** Automated reconciliation between document-extracted fields and vendor form fields (e.g. matching legal entity name on tax certificate vs bank statement vs web form) (Planned: Phase 2, Step 5).
+- **Discrepancy Detection & Highlighting:** Generating cross-document discrepancy flags and confidence scores for human reviewer triage (Planned: Phase 2, Step 5).
+- **Automated Document-Driven Compliance Decisioning:** Directly altering vendor approval status based on document contents (Planned: Phase 2, Step 5).
 - **External Authority Registries:** Independent real-time lookups against GSTIN, IRS, or MCA portals (Planned: Phase 3).
 - **Human-in-the-Loop Review Queues:** Dedicated exception triage and manual document approval workflows (Planned: Phase 3).

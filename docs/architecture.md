@@ -395,9 +395,11 @@ flowchart TD
 | **Decision Engine (Approved/Pending/Rejected)** | Phase 1 (Step 4) | **Implemented** | `backend/app/decision/`, `backend/app/services/decision_service.py` |
 | **Decision Policy & Evidence Hardening** | Phase 1 (Step 4.1) | **Implemented** | `backend/app/decision/config.py`, `backend/app/decision/rules.py`, `backend/app/services/decision_service.py` |
 | **End-to-End Core Integration & Activity History** | Phase 1 (Step 5) | **Implemented** | `backend/app/api/v1/endpoints/vendors.py`, `backend/app/models/activity.py`, `backend/app/scripts/seed_demo_data.py`, `frontend/src/components/VendorActivityTimeline.tsx` |
-| **Document Intake & Secure Storage** | Phase 2 (Step 1) | **Implemented** | `backend/app/models/document.py`, `backend/app/core/storage.py`, `backend/app/core/document_validator.py`, `backend/app/services/document_service.py`, `backend/app/api/v1/endpoints/documents.py`, `frontend/src/components/DocumentManager.tsx` |
-| **Document Processing & OCR** | Phase 2 (Step 2) | *Planned* | `backend/app/services/ocr_service.py` |
-| **Cross-Document Verification** | Phase 2 (Step 3) | *Planned* | `backend/app/services/cross_doc_service.py` |
+| **Document Intake & Secure Storage** | Phase 2 (Step 1 & 1.1) | **Implemented** | `backend/app/models/document.py`, `backend/app/core/storage.py`, `backend/app/core/document_validator.py`, `backend/app/services/document_service.py`, `backend/app/api/v1/endpoints/documents.py`, `frontend/src/components/DocumentManager.tsx` |
+| **Document Classification Engine** | Phase 2 (Step 2 & 2.1) | **Implemented** | `backend/app/classification/`, `backend/app/services/classification_service.py` |
+| **OCR & Structured Information Extraction** | Phase 2 (Step 3) | **Implemented** | `backend/app/extraction/ocr_engine.py`, `backend/app/extraction/parsers.py`, `backend/app/services/extraction_service.py` |
+| **Extraction Confidence & Evidence Management** | Phase 2 (Step 4) | **Implemented** | `backend/app/extraction/confidence.py`, `backend/app/extraction/normalization.py`, `backend/app/api/v1/endpoints/documents.py`, `frontend/src/components/DocumentManager.tsx` |
+| **Cross-Document Verification** | Phase 2 (Step 5) | *Planned* | `backend/app/services/cross_doc_service.py` |
 | **Human-in-the-Loop Review** | Phase 3 | *Planned* | `backend/app/services/review_service.py` |
 | **Audit Trail & Logging** | Phase 4 | *Planned* | `backend/app/services/audit_service.py` |
 | **LLM Verification Agents** | Phase 5 | *Planned* | `backend/app/services/ai_agent_service.py` |
@@ -577,7 +579,48 @@ When a document lacks expected fields (such as a tax certificate with registrati
 
 ---
 
-## 14. Dependency Reproducibility Strategy
+## 14. Phase 2 — Step 4: Extraction Confidence & Evidence Management Architecture
+
+Phase 2, Step 4 strengthens the document extraction pipeline by implementing explainable, signal-grounded confidence scores, a dedicated normalization layer, honest provenance integrity, and interactive original document page inspection.
+
+### A. Core Architecture & Separation of Concerns
+- **`backend/app/extraction/confidence.py` (`QualityAssessor`):**
+  - Evaluates individual fields using six orthogonal, measurable evidence signals (`source_quality`, `label_match`, `format_validity`, `normalization_adjustment`, `ambiguity_penalty`, `provenance_quality`).
+  - Implements weighted composite scoring:
+    $$\text{Composite} = (0.20 \times \text{source}) + (0.25 \times \text{label}) + (0.30 \times \text{format}) + (0.15 \times \text{provenance}) + (0.10 \times \text{norm}) - \text{penalty}$$
+  - Transparent presentation: Documented strictly as "Extraction Quality Score" or "Evidence Quality" representing signal alignment and structural validity—never labeled as a statistical probability or a guarantee of external authenticity.
+  - Explainable thresholds: $\ge 0.75 \to \text{EXTRACTED}$; $< 0.75 \to \text{NEEDS\_REVIEW}$ with documented rationale.
+- **`backend/app/extraction/normalization.py`:**
+  - Dedicated normalization functions (`normalize_gstin`, `normalize_date`, `normalize_entity_name`, `normalize_address`, `normalize_ifsc`, `normalize_account_number`).
+  - Tracks OCR character substitutions (`O` $\leftrightarrow$ `0`, `I` $\leftrightarrow$ `1`), notes repairs, and assigns normalization confidence penalties.
+  - Distinguishes unambiguous dates from ambiguous dates (e.g. `03/04/2024` where month/day cannot be resolved without guessing), flagging them for operator verification (`NEEDS_REVIEW`) rather than making ungrounded assumptions.
+  - Cleans addresses and reconnects hyphenated line-breaks (`Indus-\ntrial` $\to$ `Industrial`).
+  - Preserves corporate suffixes (`Pvt Ltd`, `LLC`, `Corp`, `Inc`) without aggressive title-casing.
+  - Masks financial account numbers by default (`****1234`) with zero plaintext leaks.
+- **`backend/app/schemas/extraction.py`:**
+  - Expands `FieldStatus` to include `NEEDS_REVIEW` and `UNREADABLE`.
+  - Enriches `ExtractedField` with `quality_score`, `quality_breakdown`, `quality_explanation`, and `normalization_notes`.
+  - Enforces provenance integrity: missing fields strictly set `source: None` with `page_number: None` (no fabricated defaults).
+- **`backend/app/api/v1/endpoints/documents.py`:**
+  - Implements `GET /api/v1/vendors/{vendor_id}/documents/{document_id}/pages/{page_number}/preview`.
+  - Dynamic in-memory page rendering via `pdf2image` (`pdftoppm`) returning a PNG stream with `Cache-Control: private, no-store`.
+  - Zero permanent plaintext on disk; cross-vendor access rejected with `HTTP 404`.
+- **`frontend/src/components/DocumentManager.tsx`:**
+  - Color-coded quality score badges (`98% Quality`) with full signal tooltips.
+  - Distinct field status indicators (`EXTRACTED`, `NEEDS_REVIEW`, `MISSING`, `UNREADABLE`).
+  - Full-screen modal for original document page inspection with multi-page navigation, evidence snippet citation, and quality breakdown.
+  - Prominent "Evidence-Only Principle" disclaimer ensuring operators understand extraction never mutates vendor data or approval status.
+
+### B. Strict Data Integrity & Non-Mutation Principle
+Document extraction is strictly an **evidence gathering** operation:
+- Extracted values and quality scores are stored exclusively in the `document_extractions` table.
+- Extraction never overwrites vendor-submitted form data (e.g. `Vendor.legal_name`, `Vendor.tax_id_number`, `VendorAccount.account_number`).
+- Extraction never alters vendor onboarding decisions (`Vendor.status` remains unchanged; `vendor_decisions` are not triggered or mutated).
+- Cross-document discrepancy detection and automated decision reconciliation are deliberately deferred to Step 5.
+
+---
+
+## 15. Dependency Reproducibility Strategy
 
 For a one-week case study project, dependency management balances determinism with zero unnecessary tool overhead:
 - **Backend:** Pin explicit, exact versions in `backend/requirements.txt` (`==` pinning). Standard installation via `python3 -m venv .venv && pip install -r requirements.txt`. Includes `cryptography==50.0.2`, `pytesseract==0.3.13`, `pdf2image==1.17.0`, and `pillow==11.0.0`. System binaries: `tesseract` and `poppler` (`pdftoppm`).
