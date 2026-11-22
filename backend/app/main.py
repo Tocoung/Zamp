@@ -1,8 +1,11 @@
 """FastAPI Application entry point."""
 
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Response, status
+import os
+from fastapi import FastAPI, Response, Request, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app.core.config import settings
@@ -104,10 +107,32 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Root endpoint
+# Resolve paths to static frontend distribution
+dist_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../frontend/dist"))
+dist_index = os.path.join(dist_dir, "index.html")
+dist_assets = os.path.join(dist_dir, "assets")
+dist_favicon = os.path.join(dist_dir, "favicon.svg")
+
+# Mount frontend assets (/assets/...)
+if os.path.exists(dist_assets) and os.path.isdir(dist_assets):
+    app.mount("/assets", StaticFiles(directory=dist_assets), name="assets")
+
+
+@app.get("/favicon.svg", include_in_schema=False)
+def favicon():
+    if os.path.exists(dist_favicon):
+        return FileResponse(dist_favicon)
+    return Response(status_code=404)
+
+
+# Root endpoint: serves web SPA for browsers, or API discovery JSON for API consumers
 @app.get("/", tags=["Root"])
-def read_root():
-    """Service metadata and root discovery endpoint."""
+def read_root(request: Request):
+    """Service metadata endpoint for API consumers; serves React SPA dashboard for browser clients."""
+    accept = request.headers.get("accept", "")
+    if "text/html" in accept and os.path.exists(dist_index):
+        return FileResponse(dist_index)
+
     return {
         "service": settings.PROJECT_NAME,
         "version": settings.VERSION,

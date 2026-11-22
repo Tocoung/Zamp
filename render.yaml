@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: zamp-vendor-onboarding
+    runtime: docker
+    plan: free
+    region: oregon
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: DEBUG
+        value: "False"
+      - key: CORS_ORIGINS
+        value: '["*"]'
+      - key: VENDOR_DATA_ENCRYPTION_KEY
+        sync: false
