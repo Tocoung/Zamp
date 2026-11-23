@@ -35,6 +35,7 @@ COPY backend/ ./backend/
 
 # Copy built frontend assets from Stage 1
 COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
+COPY frontend/static ./frontend/static
 
 # Ensure persistent runtime directories exist
 RUN mkdir -p /app/data/documents /app/storage
