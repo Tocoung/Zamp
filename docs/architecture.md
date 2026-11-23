@@ -652,9 +652,9 @@ Document extraction is strictly an **evidence gathering** operation:
 
 ---
 
-## 15. Cross-Document Validation & Discrepancy Detection Engine (Step 5)
+## 15. Cross-Document Validation & Discrepancy Detection Engine (Step 5 & Step 5.1)
 
-The Cross-Document Validation Engine provides a deterministic, multi-source verification and discrepancy detection mechanism that reconciles vendor-submitted profile data against extracted document evidence and cross-validates document evidence against other documents.
+The Cross-Document Validation Engine provides a deterministic, multi-source verification and discrepancy detection mechanism that reconciles vendor-submitted profile data against extracted document evidence and cross-validates document evidence across multiple documents.
 
 ```
 +-----------------------------------------------------------------------------------+
@@ -666,20 +666,29 @@ The Cross-Document Validation Engine provides a deterministic, multi-source veri
 |              +-------------------+--------------------+                           |
 |                                  |                                                |
 |                                  v                                                |
-|                   Deterministic Verification Rules (12+)                          |
+|                   Evidence Eligibility & Classification Gate                      |
+|             +--------------------------------------------------+                  |
+|             | - Classification Status & Category Validation    |                  |
+|             | - Extraction Run Validity (No FAILED/INSUFF_TEXT)|                  |
+|             | - Multi-Document Retention (No Silent Overwrite) |                  |
+|             +--------------------------------------------------+                  |
+|                                  |                                                |
+|                                  v                                                |
+|                   Deterministic Verification Rules (16 Active)                    |
 |             +--------------------+---------------------+                          |
 |             | Exact Identifiers  | Date Validation     |                          |
-|             | - GSTIN (Strict)   | - Incorp Date       |                          |
-|             | - Reg No (Strict)  | - Ambiguity Check   |                          |
-|             | - IFSC (Strict)    |                     |                          |
+|             | - GSTIN (Masked)   | - Incorp Date       |                          |
+|             | - Reg No / CIN     | - Ambiguity Check   |                          |
+|             | - IFSC (Masked)    |                     |                          |
 |             +--------------------+---------------------+                          |
-|             | Fuzzy Entity Names | Fuzzy Addresses     |                          |
-|             | - Composite Leven/ | - Token Jaccard     |                          |
-|             |   Token Sort       | - Component Checks  |                          |
+|             | Intra-Doc Conflict | Fuzzy Entity Names  |                          |
+|             | - Multi-GST Check  | - Lexical Metric    |                          |
+|             | - Multi-Bank Check | - Conservative      |                          |
+|             | - Multi-COI Check  |   Discrepancy Policy|                          |
 |             +--------------------+---------------------+                          |
 |             | Masked Bank Acc    | Evidence Integrity  |                          |
-|             | - Decrypted in mem | - OCR Confidence    |                          |
-|             | - ••••1234 masked  | - Unreadable check  |                          |
+|             | - Decrypted in mem | - Zero PII Leakage  |                          |
+|             | - ••••1234 masked  | - Snippet Sanitizer |                          |
 |             +--------------------+---------------------+                          |
 |                                  |                                                |
 |                                  v                                                |
@@ -692,20 +701,38 @@ The Cross-Document Validation Engine provides a deterministic, multi-source veri
 +-----------------------------------------------------------------------------------+
 ```
 
-### A. Core Architecture & Verification Rules
-1. **Multi-Source Reconciliation:**
-   - Compares Profile vs Document (e.g., Vendor Profile GSTIN vs GST Certificate GSTIN).
-   - Compares Cross-Document Evidence (e.g., GST Certificate Legal Name vs Certificate of Incorporation Legal Name).
-   - Flags Missing Required Evidence (e.g., Tax Certificate or Bank Proof missing).
-2. **Deterministic Comparison Primitives:**
-   - **Exact Statutory Identifiers:** Case-insensitive alphanumeric equality for GSTIN, Corporate Registration Number, and IFSC codes.
-   - **Financial Account Verification:** Bank account numbers are decrypted strictly in memory using Fernet, normalized to digits, and matched. All representations in findings, logs, and UI are masked (`••••••••1234`).
-   - **Date Matching & Ambiguity Safety:** ISO calendar parsing and normalization. Dates with ambiguous conventions (`day <= 12` and `month <= 12` with differing day/month interpretations) are flagged as `POTENTIAL_DISCREPANCY` (never confirmed discrepancy).
-   - **Fuzzy Company Name Similarity:** Composite metric combining Token Sort Ratio (60%) and Levenshtein Distance (40%). Thresholds: $\ge 0.90 \to \text{MATCH}$, $0.75 - 0.89 \to \text{POTENTIAL\_DISCREPANCY}$, $< 0.75 \to \text{CONFIRMED\_DISCREPANCY}$ (Critical Severity).
-   - **Conservative Fuzzy Address Matching:** Component-based validation (postal code and city matching) paired with Token Jaccard similarity. Thresholds: $\ge 0.75 \to \text{MATCH}$, $0.50 - 0.74 \to \text{POTENTIAL\_DISCREPANCY}$, $< 0.50 \to \text{CONFIRMED\_DISCREPANCY}$.
-3. **Evidence Confidence & Unreadable Handling:**
-   - Extractions with confidence $< 0.70$ or status `UNREADABLE` generate `INSUFFICIENT_EVIDENCE` or `UNSUPPORTED_DOCUMENT` findings.
-   - Low confidence or unreadable documents **NEVER** trigger automatic rejection (`status = REJECTED`).
+### A. Core Architecture, Evidence Eligibility & Verification Rules
+1. **Multiple Documents of the Same Category (Step 5.1):**
+   - Retains all uploaded documents per category deterministically ordered by `(created_at, id)`.
+   - Never silently discards older documents. Re-uploaded or corrected documents do not erase earlier contradictory evidence.
+   - Intra-category comparison rules (`rule_gstin_intra_doc_conflict`, `rule_bank_intra_doc_conflict`, `rule_coi_intra_doc_conflict`) evaluate all pairwise combinations ($i < j$) without duplicates.
+   - Exact `document_id` and `extraction_id` are preserved on every finding's `evidence_sources`.
+2. **Classification-Aware Evidence Eligibility (Step 5.1):**
+   - The engine queries and inspects the latest `DocumentClassification` record for every document.
+   - Classification status and predicted category are verified before any extracted fields can be used.
+   - If predicted category conflicts with declared category, the engine generates an explicit `POTENTIAL_DISCREPANCY` finding and prevents using the document as verified evidence of the declared category.
+   - Inconclusive classifications (`UNKNOWN`, `OTHER`, `INSUFFICIENT_TEXT`, `FAILED`, or unclassified) yield explicit `INSUFFICIENT_EVIDENCE` findings.
+   - `classification_id` is preserved in finding evidence sources. Declared category in the database is kept unchanged.
+3. **Extraction Eligibility & Stale Result Prevention (Step 5.1):**
+   - Only extractions matching the exact document and vendor are evaluated.
+   - Selects the latest extraction run deterministically.
+   - `FAILED` or `INSUFFICIENT_TEXT` extraction runs are disqualified from providing successful evidence and emit reviewable `INSUFFICIENT_EVIDENCE` findings.
+4. **Privacy Hardening & Zero-Leakage Invariant (Step 5.1):**
+   - Extends mandatory privacy masking across all sensitive statutory identifiers: GSTIN (`27•••••••••1ZM`), PAN (`AB•••••••F`), CIN (`U72900••••••••368421`), US EIN (`••-••••789`), Bank Account Number (`••••••••1234`), and IFSC (`HDFC••••234`).
+   - Raw sensitive identifiers are **never** exposed in `explanation`, `comparison_summary`, `value_display`, or `sanitized_snippet`.
+   - Decrypted bank account numbers exist strictly in memory during evaluation and are never persisted in verification tables.
+5. **Conservative Fuzzy Comparison Policy (Step 5.1):**
+   - Lexical similarity scores are editorial distance metrics, never described as "probabilities".
+   - Low similarity alone does not establish confirmed non-identity. A conservative policy is enforced:
+     - Exact or normalized match ($\ge 0.90$): `MATCH`.
+     - Moderate similarity ($0.50 - 0.89$): `POTENTIAL_DISCREPANCY` (Requires review for trade name, subsidiary, or formatting variation).
+     - Low similarity ($< 0.50$): `CONFIRMED_DISCREPANCY` only when both sources have high extraction confidence ($\ge 0.70$) and negligible core token overlap.
+   - Exact statutory identifiers are strictly compared using deterministic exact matching, never fuzzy matching.
+   - Address comparisons evaluate structural postal code / PIN and city consistency. Conflicting postal codes generate `CONFIRMED_DISCREPANCY`.
+6. **Decision Safety & Non-Mutation:**
+   - Missing documents, low-confidence OCR, and unreadable fields route approved vendors to `PENDING`—they **NEVER** trigger automatic rejection (`status = REJECTED`).
+   - Extracted document values never overwrite vendor profile records.
+   - No claim of external government, bank, or registry authenticity verification.
 
 ### B. Persistence & Decision Engine Integration
 - **Persistent Entities:**

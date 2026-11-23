@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.models.vendor import Vendor
 from app.models.document import VendorDocument
+from app.models.classification import DocumentClassification
 from app.models.extraction import DocumentExtraction
 from app.schemas.extraction import ExtractedField, FieldStatus
 from app.schemas.verification import (
@@ -78,8 +79,10 @@ def create_test_doc_and_extraction(
     filename: str,
     fields: dict,
     extraction_status: str = "COMPLETED",
+    classification_status: str = "CLASSIFIED",
+    predicted_category: str = None,
 ) -> Tuple:
-    """Helper to seed a VendorDocument and corresponding DocumentExtraction."""
+    """Helper to seed a VendorDocument, DocumentClassification, and corresponding DocumentExtraction."""
     doc = VendorDocument(
         id=str(uuid.uuid4()),
         vendor_id=vendor_id,
@@ -96,6 +99,19 @@ def create_test_doc_and_extraction(
     db.add(doc)
     db.commit()
     db.refresh(doc)
+
+    clf = DocumentClassification(
+        id=str(uuid.uuid4()),
+        document_id=doc.id,
+        vendor_id=vendor_id,
+        predicted_category=predicted_category or category,
+        status=classification_status,
+        confidence_score=0.95,
+        evidence={"summary": "Seed test classification"},
+    )
+    db.add(clf)
+    db.commit()
+    db.refresh(clf)
 
     ext = DocumentExtraction(
         id=str(uuid.uuid4()),

@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.models.vendor import Vendor
 from app.models.document import VendorDocument
+from app.models.classification import DocumentClassification
 from app.models.extraction import DocumentExtraction
 from app.models.verification import VerificationRun, VerificationFinding
 from app.models.activity import VendorActivity
@@ -178,12 +179,20 @@ class VerificationService:
         else:
             vendor_dict["bank_account_number"] = None
 
-        # 3. Retrieve all active documents and their extractions
+        # 3. Retrieve all active documents, classifications, and extractions
         documents = list(
             db.scalars(
                 select(VendorDocument)
                 .where(VendorDocument.vendor_id == vendor.id)
                 .order_by(VendorDocument.created_at.asc())
+            ).all()
+        )
+
+        classifications = list(
+            db.scalars(
+                select(DocumentClassification)
+                .where(DocumentClassification.vendor_id == vendor.id)
+                .order_by(DocumentClassification.created_at.asc())
             ).all()
         )
 
@@ -201,6 +210,7 @@ class VerificationService:
             vendor_dict=vendor_dict,
             documents=documents,
             extractions=extractions,
+            classifications=classifications,
         )
 
         # 5. Build database records

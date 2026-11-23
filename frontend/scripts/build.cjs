@@ -45,6 +45,7 @@ build({
 })
   .then(() => {
     console.log(`Build completed successfully in ${Date.now() - t0} ms.`);
+    process.exit(0);
   })
   .catch((err) => {
     console.error('Build failed:', err);

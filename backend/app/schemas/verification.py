@@ -59,6 +59,7 @@ class EvidenceSource(BaseModel):
     document_id: Optional[str] = Field(None, description="UUID of source document (if applicable)")
     document_name: Optional[str] = Field(None, description="Filename of source document")
     document_category: Optional[str] = Field(None, description="Category of source document")
+    classification_id: Optional[str] = Field(None, description="UUID of source classification record")
     extraction_id: Optional[str] = Field(None, description="UUID of source extraction run")
     page_number: Optional[int] = Field(None, ge=1, description="1-based page number where evidence appears")
     extraction_method: Optional[str] = Field(None, description="DIGITAL_TEXT or OCR")

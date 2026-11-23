@@ -12,11 +12,18 @@ from app.schemas.verification import (
 from app.verification.normalization import (
     extract_postal_code,
     mask_account_number,
+    mask_cin,
+    mask_ein,
+    mask_gstin,
+    mask_ifsc,
+    mask_pan,
+    mask_sensitive_identifier,
     normalize_account_number,
     normalize_address,
     normalize_entity_name,
     normalize_identifier,
     parse_and_normalize_date,
+    sanitize_evidence_snippet,
 )
 from app.verification.similarity import (
     compute_address_similarity,
@@ -50,17 +57,26 @@ def compare_exact_identifier(
     quality1: float = 1.0,
     quality2: float = 1.0,
     is_critical: bool = False,
+    is_sensitive: bool = True,
 ) -> ComparisonOutcome:
-    """Compares structured statutory identifiers (GSTIN, PAN, CIN, IFSC, etc.) exactly."""
+    """Compares structured statutory identifiers (GSTIN, PAN, CIN, IFSC, etc.) exactly.
+    
+    Zero-Leakage Privacy Policy:
+    Sensitive statutory identifiers are masked in all generated explanations,
+    comparison summaries, and audit records.
+    """
     norm1 = normalize_identifier(val1)
     norm2 = normalize_identifier(val2)
+
+    masked1 = mask_sensitive_identifier(val1, field_label) if is_sensitive else (norm1 or "—")
+    masked2 = mask_sensitive_identifier(val2, field_label) if is_sensitive else (norm2 or "—")
 
     if not norm1 or not norm2:
         return ComparisonOutcome(
             result=FindingResult.INSUFFICIENT_EVIDENCE,
             severity=FindingSeverity.INFO,
             explanation=f"Cannot compare {field_label}: Value is missing or empty in one or both sources.",
-            comparison_summary=f"{source1_label}: '{norm1 or '—'}' vs {source2_label}: '{norm2 or '—'}'",
+            comparison_summary=f"{source1_label}: {masked1} vs {source2_label}: {masked2}",
             similarity_score=0.0,
         )
 
@@ -68,8 +84,8 @@ def compare_exact_identifier(
         return ComparisonOutcome(
             result=FindingResult.MATCH,
             severity=FindingSeverity.INFO,
-            explanation=f"{field_label} matches consistently between {source1_label} and {source2_label}.",
-            comparison_summary=f"'{norm1}' == '{norm2}'",
+            explanation=f"{field_label} matches consistently between {source1_label} and {source2_label} ({masked1}).",
+            comparison_summary=f"{masked1} == {masked2}",
             similarity_score=1.0,
         )
 
@@ -81,10 +97,10 @@ def compare_exact_identifier(
             result=FindingResult.CONFIRMED_DISCREPANCY,
             severity=FindingSeverity.CRITICAL if is_critical else FindingSeverity.WARNING,
             explanation=(
-                f"Confirmed {field_label} mismatch: {source1_label} specifies '{norm1}' "
-                f"whereas {source2_label} contains '{norm2}'."
+                f"Confirmed {field_label} mismatch: {source1_label} specifies {masked1} "
+                f"whereas {source2_label} contains {masked2}."
             ),
-            comparison_summary=f"{source1_label}: '{norm1}' ≠ {source2_label}: '{norm2}'",
+            comparison_summary=f"{source1_label}: {masked1} ≠ {source2_label}: {masked2}",
             similarity_score=0.0,
         )
     else:
@@ -93,11 +109,11 @@ def compare_exact_identifier(
             result=FindingResult.POTENTIAL_DISCREPANCY,
             severity=FindingSeverity.WARNING,
             explanation=(
-                f"Potential {field_label} discrepancy requiring review: {source1_label} has '{norm1}' "
-                f"while {source2_label} has '{norm2}'. Evidence in {low_source} has limited extraction confidence "
+                f"Potential {field_label} discrepancy requiring review: {source1_label} has {masked1} "
+                f"while {source2_label} has {masked2}. Evidence in {low_source} has limited extraction confidence "
                 f"({min(quality1, quality2):.2f})."
             ),
-            comparison_summary=f"{source1_label}: '{norm1}' ~ {source2_label}: '{norm2}' (low confidence)",
+            comparison_summary=f"{source1_label}: {masked1} ~ {source2_label}: {masked2} (low confidence)",
             similarity_score=0.0,
         )
 
@@ -246,7 +262,14 @@ def compare_company_names(
     quality2: float = 1.0,
     is_critical: bool = False,
 ) -> ComparisonOutcome:
-    """Fuzzy and deterministic company name comparison with transparent similarity scoring."""
+    """Conservative company name comparison with transparent lexical similarity metrics.
+    
+    Conservative Policy:
+    - Similarity scores are lexical metrics, not probabilities.
+    - Low similarity alone does not establish confirmed non-identity without high-confidence
+      independent evidence and distinct lexical identity.
+    - Moderate similarity (0.35 - 0.89) routes to POTENTIAL_DISCREPANCY for reviewer verification.
+    """
     norm1 = normalize_entity_name(name1)
     norm2 = normalize_entity_name(name2)
 
@@ -265,34 +288,39 @@ def compare_company_names(
         return ComparisonOutcome(
             result=FindingResult.MATCH,
             severity=FindingSeverity.INFO,
-            explanation=f"{field_label} matches consistently between {source1_label} and {source2_label} (similarity: {similarity:.2f}).",
+            explanation=(
+                f"{field_label} matches consistently between {source1_label} and {source2_label} "
+                f"(lexical similarity: {similarity:.2f}). Note: Metric is lexical similarity, not a probability."
+            ),
             comparison_summary=f"'{name1}' ~ '{name2}' ({similarity:.2f})",
             similarity_score=similarity,
         )
 
     is_both_high_confidence = (quality1 >= HIGH_CONFIDENCE_THRESHOLD and quality2 >= HIGH_CONFIDENCE_THRESHOLD)
 
-    if similarity >= FUZZY_NAME_REVIEW_THRESHOLD:
+    # Moderate similarity: partial token overlap or naming variation (0.50 <= similarity < 0.90)
+    if similarity >= 0.50:
         return ComparisonOutcome(
             result=FindingResult.POTENTIAL_DISCREPANCY,
             severity=FindingSeverity.WARNING,
             explanation=(
-                f"Potential {field_label} discrepancy requiring review (similarity: {similarity:.2f}): "
+                f"Potential {field_label} variation requiring review (lexical similarity: {similarity:.2f}): "
                 f"{source1_label} has '{name1}' while {source2_label} has '{name2}'. "
-                "Significant token overlap observed; human review needed to confirm DBA or entity variation."
+                "Partial lexical overlap observed; human review needed to confirm DBA, subsidiary, or formatting variation."
             ),
             comparison_summary=f"{source1_label}: '{name1}' ~ {source2_label}: '{name2}' ({similarity:.2f})",
             similarity_score=similarity,
         )
 
-    # Low similarity (< FUZZY_NAME_REVIEW_THRESHOLD)
+    # Low similarity (< 0.50): distinctly different corporate names
     if is_both_high_confidence:
         return ComparisonOutcome(
             result=FindingResult.CONFIRMED_DISCREPANCY,
             severity=FindingSeverity.CRITICAL if is_critical else FindingSeverity.WARNING,
             explanation=(
-                f"Confirmed {field_label} mismatch: {source1_label} has '{name1}' "
-                f"whereas {source2_label} specifies '{name2}' (similarity: {similarity:.2f})."
+                f"Confirmed {field_label} mismatch: {source1_label} specifies '{name1}' "
+                f"whereas {source2_label} specifies distinct entity '{name2}' with verified high-confidence OCR "
+                f"and negligible core token overlap (similarity: {similarity:.2f})."
             ),
             comparison_summary=f"{source1_label}: '{name1}' ≠ {source2_label}: '{name2}' ({similarity:.2f})",
             similarity_score=similarity,
@@ -303,9 +331,10 @@ def compare_company_names(
             result=FindingResult.POTENTIAL_DISCREPANCY,
             severity=FindingSeverity.WARNING,
             explanation=(
-                f"Potential {field_label} conflict (similarity: {similarity:.2f}): "
+                f"Potential {field_label} discrepancy (lexical similarity: {similarity:.2f}): "
                 f"{source1_label} has '{name1}' vs {source2_label}: '{name2}'. "
-                f"Evidence in {low_source} has low extraction quality ({min(quality1, quality2):.2f})."
+                f"Evidence in {low_source} has limited extraction quality ({min(quality1, quality2):.2f}). "
+                "Under conservative verification policy, low similarity does not confirm non-identity without high-confidence OCR."
             ),
             comparison_summary=f"{source1_label}: '{name1}' ~ {source2_label}: '{name2}' (low confidence)",
             similarity_score=similarity,
@@ -367,8 +396,11 @@ def compare_addresses(
         return ComparisonOutcome(
             result=FindingResult.MATCH,
             severity=FindingSeverity.INFO,
-            explanation=f"{field_label} matches consistently between {source1_label} and {source2_label} (similarity: {similarity:.2f}).",
-            comparison_summary=f"Address matched (similarity: {similarity:.2f})",
+            explanation=(
+                f"{field_label} matches consistently between {source1_label} and {source2_label} "
+                f"(lexical similarity: {similarity:.2f})."
+            ),
+            comparison_summary=f"Address matched (lexical similarity: {similarity:.2f})",
             similarity_score=similarity,
         )
 
@@ -377,24 +409,24 @@ def compare_addresses(
             result=FindingResult.POTENTIAL_DISCREPANCY,
             severity=FindingSeverity.WARNING,
             explanation=(
-                f"Potential {field_label} formatting variation (similarity: {similarity:.2f}): "
+                f"Potential {field_label} formatting variation (lexical similarity: {similarity:.2f}): "
                 f"{source1_label} and {source2_label} share major address components but differ in details."
             ),
-            comparison_summary=f"Partial address match (similarity: {similarity:.2f})",
+            comparison_summary=f"Partial address match (lexical similarity: {similarity:.2f})",
             similarity_score=similarity,
         )
 
-    # Discrepancy
+    # Low similarity without explicit postal/city conflict
     is_both_high_confidence = (quality1 >= HIGH_CONFIDENCE_THRESHOLD and quality2 >= HIGH_CONFIDENCE_THRESHOLD)
-    if is_both_high_confidence:
+    if is_both_high_confidence and similarity < 0.20:
         return ComparisonOutcome(
             result=FindingResult.CONFIRMED_DISCREPANCY,
             severity=FindingSeverity.CRITICAL if is_critical else FindingSeverity.WARNING,
             explanation=(
-                f"Confirmed {field_label} discrepancy: Significant mismatch between "
-                f"{source1_label} and {source2_label} (similarity: {similarity:.2f})."
+                f"Confirmed {field_label} discrepancy: Significant divergence between "
+                f"{source1_label} and {source2_label} with no common address components (lexical similarity: {similarity:.2f})."
             ),
-            comparison_summary=f"Address mismatch (similarity: {similarity:.2f})",
+            comparison_summary=f"Address mismatch (lexical similarity: {similarity:.2f})",
             similarity_score=similarity,
         )
     else:
@@ -403,9 +435,10 @@ def compare_addresses(
             result=FindingResult.POTENTIAL_DISCREPANCY,
             severity=FindingSeverity.WARNING,
             explanation=(
-                f"Potential {field_label} discrepancy (similarity: {similarity:.2f}): "
-                f"Evidence in {low_source} has low extraction quality ({min(quality1, quality2):.2f})."
+                f"Potential {field_label} discrepancy (lexical similarity: {similarity:.2f}): "
+                f"Low similarity between {source1_label} and {source2_label} without confirmed conflict; "
+                "under conservative verification policy, human review is required."
             ),
-            comparison_summary=f"Address review required (similarity: {similarity:.2f})",
+            comparison_summary=f"Address review required (lexical similarity: {similarity:.2f})",
             similarity_score=similarity,
         )

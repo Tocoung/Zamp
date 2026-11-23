@@ -1,8 +1,8 @@
 # Zamp — AI-Powered Vendor Onboarding Automation
 
 > **Case Study:** Zamp AI Solutions Analyst Case Study  
-> **Phase:** 2 — Step 5 (Cross-Document Validation & Discrepancy Detection)  
-> **Status:** Fully Integrated, Tested, and Verified (273 Automated Tests Passing)  
+> **Phase:** 2 — Step 5.1 (Verification Engine Correctness, Evidence Eligibility & Privacy Hardening)  
+> **Status:** Fully Integrated, Tested, and Verified (288 Automated Tests Passing)  
 
 An automated platform designed to streamline vendor company onboarding, compliance document intake & secure storage, multi-source verification, deterministic validation, explainable decisioning (`APPROVED` / `PENDING` / `REJECTED`), lifecycle activity tracking, and human-in-the-loop review.
 
@@ -594,26 +594,31 @@ PYTHONPATH=backend backend/.venv/bin/pytest backend/tests/ -v
 
 ---
 
-## 7. Cross-Document Validation & Discrepancy Detection (Phase 2 Step 5)
+## 7. Cross-Document Validation & Discrepancy Detection (Phase 2 Step 5 & Step 5.1)
 
-Phase 2 Step 5 implements an explainable, deterministic cross-document verification engine (`backend/app/verification/`) that compares vendor profile inputs with extracted document fields, cross-checks documents against each other, detects discrepancies, protects sensitive financial data, and reconciles vendor onboarding statuses.
+Phase 2 Step 5 and Step 5.1 implement an explainable, deterministic cross-document verification engine (`backend/app/verification/`) that compares vendor profile inputs with extracted document fields, cross-checks documents against each other, evaluates classification and extraction eligibility, detects discrepancies, protects sensitive financial data, and reconciles vendor onboarding statuses.
 
-### A. Comparison Primitives & Thresholds
-- **Exact Statutory Identifiers:** Case-insensitive alphanumeric equality for GSTIN, corporate registration number, and IFSC transit codes.
-- **Masked Bank Account Matching:** Bank account numbers are decrypted in memory using Fernet, stripped of non-digits, and matched. All outputs, findings, and logs display strictly masked values (`••••••••1234`).
+### A. Evidence Eligibility & Classification Awareness (Step 5.1)
+- **Multi-Document Retention:** All uploaded documents for a category are retained in chronological order. Conflicting or older documents are never silently overwritten; re-uploaded documents do not erase earlier contradictory evidence.
+- **Classification-Aware Gating:** The engine evaluates the latest `DocumentClassification` for each document. If the classified category differs from the declared category, a reviewable `POTENTIAL_DISCREPANCY` classification conflict is recorded and the document is not treated as verified evidence. Inconclusive classifications (`UNKNOWN`, `OTHER`, `INSUFFICIENT_TEXT`, `FAILED`) generate `INSUFFICIENT_EVIDENCE` findings.
+- **Extraction Eligibility:** The engine rejects `FAILED` or `INSUFFICIENT_TEXT` extraction runs, emitting explicit `INSUFFICIENT_EVIDENCE` findings without using partial text as valid evidence.
+
+### B. Comparison Primitives, Privacy Masking & Thresholds
+- **Zero-Leakage Privacy Policy:** Strict masking is enforced across all statutory identifiers: GSTIN (`27•••••••••1ZM`), PAN (`AB•••••••F`), CIN (`U72900••••••••368421`), US EIN (`••-••••789`), Bank Account (`••••••••1234`), and IFSC (`HDFC••••234`). Raw sensitive identifiers never appear in finding explanations, comparison summaries, evidence displays, or sanitized snippets.
+- **Intra-Category Conflict Rules:** Systematic pairwise evaluation across multiple documents of the same category (`rule_gstin_intra_doc_conflict`, `rule_bank_intra_doc_conflict`, `rule_coi_intra_doc_conflict`) surfaces disagreements between conflicting active documents without duplicate pairings ($i < j$).
+- **Conservative Fuzzy Company Name Similarity:** Lexical similarity metric combining Token Sort Ratio (60%) and Levenshtein Distance (40%). Similarity scores are lexical metrics, not probabilities. Thresholds: $\ge 0.90 \to \text{MATCH}$, $0.50 - 0.89 \to \text{POTENTIAL\_DISCREPANCY}$, $< 0.50 \to \text{CONFIRMED\_DISCREPANCY}$ (only with verified high-confidence OCR $\ge 0.70$).
+- **Conservative Fuzzy Address Matching:** Component-based checks (postal code and city matching) paired with Token Jaccard similarity. Thresholds: $\ge 0.75 \to \text{MATCH}$, $0.50 - 0.74 \to \text{POTENTIAL\_DISCREPANCY}$, $< 0.50 \to \text{CONFIRMED\_DISCREPANCY}$ (or explicit statutory postal code conflict).
 - **Date Matching & Ambiguity Safety:** ISO calendar normalization. Ambiguous dates (`day <= 12` and `month <= 12` with differing day/month interpretations) produce `POTENTIAL_DISCREPANCY` (never auto-fail).
-- **Fuzzy Company Name Similarity:** Composite metric of Token Sort Ratio (60%) and Levenshtein Distance (40%). Thresholds: $\ge 0.90 \to \text{MATCH}$, $0.75 - 0.89 \to \text{POTENTIAL\_DISCREPANCY}$, $< 0.75 \to \text{CONFIRMED\_DISCREPANCY}$ (Critical Severity).
-- **Conservative Fuzzy Address Matching:** Component-based checks (postal code and city matching) paired with Token Jaccard similarity. Thresholds: $\ge 0.75 \to \text{MATCH}$, $0.50 - 0.74 \to \text{POTENTIAL\_DISCREPANCY}$, $< 0.50 \to \text{CONFIRMED\_DISCREPANCY}$.
 - **Evidence Integrity Safeguard:** Extractions with OCR confidence $< 0.70$ or `UNREADABLE` status generate `INSUFFICIENT_EVIDENCE` or `UNSUPPORTED_DOCUMENT` findings. Low confidence **NEVER** causes automatic rejection.
 
-### B. REST API Endpoints
+### C. REST API Endpoints
 - `POST /api/v1/vendors/{vendor_id}/verification`: Executes a complete cross-document verification run, persists run and findings, and updates vendor status if discrepancies exist.
 - `GET /api/v1/vendors/{vendor_id}/verification/latest`: Retrieves the most recent verification run, summary metrics, and granular findings.
 - `GET /api/v1/vendors/{vendor_id}/verification/history`: Retrieves paginated verification run history.
 - `GET /api/v1/vendors/{vendor_id}/verification/{run_id}`: Retrieves an immutable historical verification run and its findings.
 
-### C. Decision Engine Status Reconciliation
-- **Discrepancy Impact:** If a vendor is currently `APPROVED` and verification finds `CONFIRMED_DISCREPANCY` or `MISSING_DOCUMENT`, the vendor's status transitions to `PENDING` (Human Review Required).
+### D. Decision Engine Status Reconciliation
+- **Discrepancy Impact:** If a vendor is currently `APPROVED` and verification finds `CONFIRMED_DISCREPANCY` or `MISSING_DOCUMENT`, the vendor's status transitions to `PENDING` (Human Review Required). Low confidence or unreadable fields never reject a vendor.
 - **Non-Mutation Rule:** Vendor profile records are never overwritten by extracted values.
 - **Audit Logging:** Every verification execution records a `VERIFICATION_EXECUTED` event in `vendor_activities`.
 
@@ -621,8 +626,9 @@ Phase 2 Step 5 implements an explainable, deterministic cross-document verificat
 
 ## 8. Test Suites & Verification Coverage
 
-The application is thoroughly verified by **273 automated tests**:
+The application is thoroughly verified by **288 automated tests**:
 
+- `test_verification_step5_1.py`: 15 regression tests covering multiple same-category documents, conflicting documents of the same type, re-uploaded corrected documents, incorrect classifications, UNKNOWN classifications, failed extractions, insufficient-text extractions, latest extraction selection, cross-vendor isolation, complete API zero-leakage privacy audit, and decision safety.
 - `test_verification_engine.py`: 19 tests validating normalization, Levenshtein distance, token sort ratio, token Jaccard similarity, and comparison primitives.
 - `test_verification_scenarios.py`: 13 end-to-end scenario tests covering matching vendors, GSTIN mismatch, legal name mismatch, minor name variation, cross-document conflicts, bank account holder mismatch, bank account number masking, address mismatch, address minor variation, missing documents, unreadable documents, low-confidence OCR, and status transition.
 - `test_verification_api.py`: 6 integration tests for verification execution, latest run, run history, specific run lookup, and error handling.
