@@ -6,6 +6,8 @@ from app.models.activity import VendorActivity
 from app.models.document import VendorDocument
 from app.models.classification import DocumentClassification
 from app.models.extraction import DocumentExtraction
+from app.models.verification import VerificationRun, VerificationFinding
+from app.models.onboarding_process import OnboardingProcessRun
 
 __all__ = [
     "Vendor",
@@ -14,4 +16,7 @@ __all__ = [
     "VendorDocument",
     "DocumentClassification",
     "DocumentExtraction",
+    "VerificationRun",
+    "VerificationFinding",
+    "OnboardingProcessRun",
 ]

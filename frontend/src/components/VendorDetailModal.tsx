@@ -23,18 +23,22 @@ import {
   DecisionResult,
   DecisionHistoryItem,
   VendorActivityItem,
+  OnboardingProcessRunResponse,
   validateExistingVendor,
   runVendorDecision,
   getLatestDecision,
   getDecisionHistory,
   fetchVendorActivities,
   updateVendor,
+  processVendorOnboarding,
+  fetchLatestOnboardingProcess,
 } from '../config/api';
 import { ValidationReport } from './ValidationReport';
 import { DecisionReport } from './DecisionReport';
 import { VendorActivityTimeline } from './VendorActivityTimeline';
 import { DocumentManager } from './DocumentManager';
 import { VerificationPanel } from './VerificationPanel';
+import { OnboardingProcessPanel } from './OnboardingProcessPanel';
 
 interface VendorDetailModalProps {
   vendor: VendorResponse | null;
@@ -63,6 +67,11 @@ export const VendorDetailModal: React.FC<VendorDetailModalProps> = ({
   const [decisionHistory, setDecisionHistory] = useState<DecisionHistoryItem[]>([]);
   const [decisionError, setDecisionError] = useState<string | null>(null);
 
+  // Onboarding orchestration pipeline state
+  const [isProcessingOnboarding, setIsProcessingOnboarding] = useState(false);
+  const [onboardingRun, setOnboardingRun] = useState<OnboardingProcessRunResponse | null>(null);
+  const [onboardingError, setOnboardingError] = useState<string | null>(null);
+
   // Lifecycle activities state
   const [activities, setActivities] = useState<VendorActivityItem[]>([]);
   const [isLoadingActivities, setIsLoadingActivities] = useState(false);
@@ -86,8 +95,41 @@ export const VendorDetailModal: React.FC<VendorDetailModalProps> = ({
     if (initialVendor && isOpen) {
       loadDecisionData(initialVendor.id);
       loadActivities(initialVendor.id);
+      loadOnboardingProcess(initialVendor.id);
     }
   }, [initialVendor, isOpen]);
+
+  const loadOnboardingProcess = async (vendorId: string) => {
+    try {
+      const latest = await fetchLatestOnboardingProcess(vendorId);
+      setOnboardingRun(latest);
+    } catch {
+      // Ignore initial load failure if vendor has no onboarding process yet
+    }
+  };
+
+  const handleProcessOnboarding = async (forceReprocess = false) => {
+    if (!vendor) return;
+    setIsProcessingOnboarding(true);
+    setOnboardingError(null);
+    try {
+      const run = await processVendorOnboarding(vendor.id, forceReprocess);
+      setOnboardingRun(run);
+      // Refresh decision, activities, and vendor status
+      loadDecisionData(vendor.id);
+      loadActivities(vendor.id);
+      if (run.decision_status) {
+        setVendor((prev) => (prev ? { ...prev, status: run.decision_status as any } : null));
+        if (onVendorUpdated && vendor) {
+          onVendorUpdated({ ...vendor, status: run.decision_status as any });
+        }
+      }
+    } catch (err: any) {
+      setOnboardingError(err.message || 'Failed to process onboarding pipeline.');
+    } finally {
+      setIsProcessingOnboarding(false);
+    }
+  };
 
   const loadDecisionData = async (vendorId: string) => {
     try {
@@ -296,6 +338,28 @@ export const VendorDetailModal: React.FC<VendorDetailModalProps> = ({
               </button>
             )}
 
+            {/* Primary Action: Process Full Onboarding Workflow */}
+            {!isEditing && (
+              <button
+                type="button"
+                onClick={() => handleProcessOnboarding(false)}
+                disabled={isProcessingOnboarding || isEvaluatingDecision || isValidating}
+                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs transition-colors disabled:opacity-50"
+              >
+                {isProcessingOnboarding ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Processing Pipeline...</span>
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="w-3.5 h-3.5 text-emerald-200" />
+                    <span>Process Onboarding</span>
+                  </>
+                )}
+              </button>
+            )}
+
             {/* Run / Re-evaluate Decision Button */}
             {!isEditing && (
               <button
@@ -354,6 +418,16 @@ export const VendorDetailModal: React.FC<VendorDetailModalProps> = ({
 
         {/* Modal Body */}
         <div className="p-6 space-y-6 max-h-[75vh] overflow-y-auto">
+          {/* Phase 2 Step 6: End-to-End Onboarding Process Panel */}
+          {!isEditing && (
+            <OnboardingProcessPanel
+              run={onboardingRun}
+              isProcessing={isProcessingOnboarding}
+              onProcess={handleProcessOnboarding}
+              error={onboardingError}
+            />
+          )}
+
           {/* Decision Error Alert */}
           {decisionError && (
             <div className="p-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-center gap-2">

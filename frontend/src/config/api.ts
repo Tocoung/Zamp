@@ -1123,3 +1123,133 @@ export async function fetchVerificationRun(
 
   return response.json();
 }
+
+// ============================================================================
+// Phase 2 Step 6: End-to-End Onboarding Orchestration Types and API Methods
+// ============================================================================
+
+export interface DocumentProcessItem {
+  document_id: string;
+  file_name: string;
+  file_type: string;
+  category?: string | null;
+  classification_status: string;
+  classification_confidence?: number | null;
+  extraction_status: string;
+  extracted_fields_count: number;
+  average_confidence?: number | null;
+  eligible_for_verification: boolean;
+  error?: string | null;
+}
+
+export interface OnboardingProcessRunResponse {
+  id: string;
+  vendor_id: string;
+  status: 'IN_PROGRESS' | 'COMPLETED' | 'PARTIAL_FAILURE' | 'FAILED';
+  trigger_source: string;
+  total_documents: number;
+  successful_documents: number;
+  failed_documents: number;
+  verification_run_id?: string | null;
+  decision_id?: string | null;
+  decision_status?: 'APPROVED' | 'PENDING' | 'REJECTED' | null;
+  decision_reasons: string[];
+  stage_results: Record<string, any>;
+  document_breakdown: DocumentProcessItem[];
+  findings_summary: Record<string, any>;
+  error_message?: string | null;
+  created_at: string;
+  completed_at?: string | null;
+}
+
+export interface OnboardingProcessHistoryResponse {
+  vendor_id: string;
+  total_runs: number;
+  runs: OnboardingProcessRunResponse[];
+}
+
+export async function processVendorOnboarding(
+  vendorId: string,
+  forceReprocess = false
+): Promise<OnboardingProcessRunResponse> {
+  const response = await fetch(
+    `${API_BASE_URL}/vendors/${vendorId}/process-onboarding?force_reprocess=${forceReprocess}`,
+    {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+      },
+    }
+  );
+
+  if (!response.ok) {
+    let errorMsg = `Failed to process onboarding (HTTP ${response.status})`;
+    try {
+      const err = await response.json();
+      if (err.detail) errorMsg = err.detail;
+    } catch {
+      // fallback
+    }
+    throw new Error(errorMsg);
+  }
+
+  return response.json();
+}
+
+export async function fetchLatestOnboardingProcess(
+  vendorId: string
+): Promise<OnboardingProcessRunResponse | null> {
+  const response = await fetch(
+    `${API_BASE_URL}/vendors/${vendorId}/onboarding-process/latest`,
+    {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+      },
+    }
+  );
+
+  if (response.status === 404) {
+    return null;
+  }
+
+  if (!response.ok) {
+    let errorMsg = `Failed to fetch latest onboarding process (HTTP ${response.status})`;
+    try {
+      const err = await response.json();
+      if (err.detail) errorMsg = err.detail;
+    } catch {
+      // fallback
+    }
+    throw new Error(errorMsg);
+  }
+
+  return response.json();
+}
+
+export async function fetchOnboardingProcessHistory(
+  vendorId: string
+): Promise<OnboardingProcessHistoryResponse> {
+  const response = await fetch(
+    `${API_BASE_URL}/vendors/${vendorId}/onboarding-process/history`,
+    {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+      },
+    }
+  );
+
+  if (!response.ok) {
+    let errorMsg = `Failed to fetch onboarding process history (HTTP ${response.status})`;
+    try {
+      const err = await response.json();
+      if (err.detail) errorMsg = err.detail;
+    } catch {
+      // fallback
+    }
+    throw new Error(errorMsg);
+  }
+
+  return response.json();
+}

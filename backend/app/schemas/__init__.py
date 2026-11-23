@@ -7,6 +7,11 @@ from app.schemas.vendor import (
     VendorPagination,
     mask_bank_account,
 )
+from app.schemas.onboarding_process import (
+    OnboardingProcessRunResponse,
+    OnboardingProcessHistoryResponse,
+    DocumentProcessItem,
+)
 
 __all__ = [
     "VendorCreate",
@@ -14,4 +19,7 @@ __all__ = [
     "VendorSummary",
     "VendorPagination",
     "mask_bank_account",
+    "OnboardingProcessRunResponse",
+    "OnboardingProcessHistoryResponse",
+    "DocumentProcessItem",
 ]

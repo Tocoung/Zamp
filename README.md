@@ -1,8 +1,8 @@
 # Zamp — AI-Powered Vendor Onboarding Automation
 
 > **Case Study:** Zamp AI Solutions Analyst Case Study  
-> **Phase:** 2 — Step 5.1 (Verification Engine Correctness, Evidence Eligibility & Privacy Hardening)  
-> **Status:** Fully Integrated, Tested, and Verified (288 Automated Tests Passing)  
+> **Phase:** 2 — Step 6 (End-to-End Integration & Testing)  
+> **Status:** Fully Integrated, Tested, and Verified (302 Automated Tests Passing)  
 
 An automated platform designed to streamline vendor company onboarding, compliance document intake & secure storage, multi-source verification, deterministic validation, explainable decisioning (`APPROVED` / `PENDING` / `REJECTED`), lifecycle activity tracking, and human-in-the-loop review.
 
@@ -624,10 +624,68 @@ Phase 2 Step 5 and Step 5.1 implement an explainable, deterministic cross-docume
 
 ---
 
-## 8. Test Suites & Verification Coverage
+## 8. Onboarding Orchestration & Workflow Engine (Step 6)
 
-The application is thoroughly verified by **288 automated tests**:
+The orchestration engine (`backend/app/services/onboarding_orchestrator_service.py`) unifies document intake, classification, OCR extraction, evidence provenance, cross-document verification, and Phase 1 deterministic validation/decisioning into an integrated workflow.
 
+### A. Target 8-Stage Onboarding Pipeline
+1. **Registration:** Validates that the vendor record exists and is complete in database.
+2. **Document Intake:** Audits all active uploaded documents, validates storage integrity, and creates execution snapshots.
+3. **Document Classification:** Deterministically classifies each document into statutory categories (`TAX_CERTIFICATE`, `BANK_PROOF`, `CERTIFICATE_OF_INCORPORATION`, `ADDRESS_PROOF`, `OTHER`).
+4. **OCR & Text Recognition:** Performs text recognition on digital PDFs, rasterized scanned PDFs (via Poppler), and images (via Tesseract).
+5. **Structured Field Extraction:** Parses statutory schemas, assigns field-level bounding boxes/page numbers, and computes quality scores.
+6. **Evidence Assessment:** Checks document readability, confidence thresholds, and flags missing mandatory statutory document categories.
+7. **Cross-Document Verification:** Compares profile information vs. document evidence and evaluates pairwise consistency across documents.
+8. **Phase 1 Validation & Final Decision:** Feeds evidence findings into Phase 1 validation and deterministic decision engine, persisting an explainable final outcome and audit events.
+
+### B. Resilience, Idempotency & Safety Guarantees
+- **Per-Document Independence:** Each document is processed in an isolated try-except block. A corrupted, encrypted, or unsupported document will not halt processing of other valid documents. Partial results are preserved and failures surfaced explicitly.
+- **Change Detection & Idempotency:** The orchestrator maintains a SHA-256 snapshot of uploaded documents and vendor profile timestamps. Repeated runs on unchanged inputs return the cached execution result with zero duplicate decision or activity records. Passing `force_reprocess=True` triggers an explicit re-evaluation.
+- **Evidence-Aware Decision Policy:**
+  - **Clean Profile + Matching Documents:** $\rightarrow$ `APPROVED`.
+  - **Missing Documents / Low Confidence OCR / Discrepancies:** $\rightarrow$ `PENDING` (Human Review Required) with actionable recommendations (`UPLOAD_BANK_DOCUMENT`, `REUPLOAD_LEGIBLE_DOCUMENT`, etc.).
+  - **Statutory Syntax Violations:** $\rightarrow$ `REJECTED` strictly for invalid tax/phone/email syntax or dummy bank account sequences.
+  - **Zero Auto-Rejection for Uncertainty:** Uncertain OCR, blurry scans, or missing documents **NEVER** result in automatic rejection.
+- **Zero Profile Mutations:** Extracted document values are comparison evidence only and never overwrite the vendor profile.
+- **Zero-Leakage Privacy:** Bank account numbers are strictly masked (`••••••••1234`) across all summaries, breakdowns, activity logs, and API payloads.
+
+### C. Orchestration API Endpoints
+- `POST /api/v1/vendors/{vendor_id}/process-onboarding`: Executes the complete 8-stage pipeline. Accepts optional query parameter `force_reprocess=true`.
+- `GET /api/v1/vendors/{vendor_id}/onboarding-process/latest`: Retrieves the latest execution run and 8-stage breakdown.
+- `GET /api/v1/vendors/{vendor_id}/onboarding-process/history`: Retrieves the complete append-only run history for audit inspection.
+
+### D. Reviewer Walkthrough Demonstration Guide
+1. **Happy Path:**
+   - Submit a new vendor or open an existing vendor in the directory.
+   - Upload matching synthetic documents: GST Certificate, Certificate of Incorporation, and Bank Proof.
+   - Click **"Process Onboarding"** in the modal header.
+   - Verify the 8-stage pipeline completes with all green checks, all documents are verified, and the decision banner displays **`APPROVED`**.
+2. **Review / Discrepancy Path:**
+   - Upload a document with a mismatched GSTIN or omit the Bank Proof document.
+   - Click **"Process Onboarding"**.
+   - Verify the pipeline completes with status **`PENDING`** (Human Review Required), highlighting the discrepancy or missing document code, with actionable remediation instructions.
+
+---
+
+## 9. Test Suites & Verification Coverage
+
+The application is thoroughly verified by **302 automated tests**:
+
+- `test_step6_e2e_integration.py`: 14 comprehensive end-to-end integration scenario tests covering:
+  1. Complete matching submission (Digital PDF) $\rightarrow$ `APPROVED`
+  2. Scanned OCR PDF with high confidence $\rightarrow$ `APPROVED`
+  3. Multiple documents of the same type evaluated without duplicate pairings
+  4. Missing mandatory compliance documents $\rightarrow$ `PENDING` (Never rejected)
+  5. Corrupted document error tolerance $\rightarrow$ partial failure, valid docs processed, `PENDING`
+  6. Inconclusive/Unknown document classification handling
+  7. Insufficient text / empty document handling
+  8. Low-confidence OCR extraction $\rightarrow$ `PENDING` (Never rejected)
+  9. Conflicting cross-document information $\rightarrow$ `PENDING` with discrepancy code
+  10. Corrected document re-upload preserving historical audit trail
+  11. Persistence across backend restart
+  12. Complete zero-leakage privacy & sensitive data masking audit
+  13. Idempotency and retry behavior (zero duplicate records)
+  14. FastAPI REST endpoints (`POST /process-onboarding`, `GET /latest`, `GET /history`, 404 handling)
 - `test_verification_step5_1.py`: 15 regression tests covering multiple same-category documents, conflicting documents of the same type, re-uploaded corrected documents, incorrect classifications, UNKNOWN classifications, failed extractions, insufficient-text extractions, latest extraction selection, cross-vendor isolation, complete API zero-leakage privacy audit, and decision safety.
 - `test_verification_engine.py`: 19 tests validating normalization, Levenshtein distance, token sort ratio, token Jaccard similarity, and comparison primitives.
 - `test_verification_scenarios.py`: 13 end-to-end scenario tests covering matching vendors, GSTIN mismatch, legal name mismatch, minor name variation, cross-document conflicts, bank account holder mismatch, bank account number masking, address mismatch, address minor variation, missing documents, unreadable documents, low-confidence OCR, and status transition.
@@ -656,7 +714,7 @@ npm --prefix frontend run build
 
 ---
 
-## 9. Scope Boundaries & Future Roadmap (Phase 3+)
+## 10. Scope Boundaries & Future Roadmap (Phase 3+)
 
 - **External Authority Registries:** Independent real-time lookups against GSTIN, IRS, or MCA live portals (Planned: Phase 3).
 - **Human-in-the-Loop Review Queues:** Dedicated multi-tenant exception triage and manual document approval workflows (Planned: Phase 3).

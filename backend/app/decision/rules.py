@@ -33,6 +33,16 @@ REASON_TITLES = {
     "UNUSUAL_ROUTING_LENGTH": "Unusual Bank Routing Identifier Length",
     "CROSS_BORDER_OPERATIONS_NOTE": "Cross-Border Corporate Structure Noted",
     "TAX_FORMAT_UNSUPPORTED_NOTE": "Non-Standard Tax Scheme Registered",
+    "MISSING_TAX_DOCUMENT": "Missing Statutory Tax Registration Document",
+    "MISSING_INCORPORATION_DOCUMENT": "Missing Certificate of Incorporation Document",
+    "MISSING_BANK_DOCUMENT": "Missing Bank Proof Document",
+    "MISSING_REQUIRED_DOCUMENT": "Missing Mandatory Verification Document",
+    "UNREADABLE_DOCUMENT_EVIDENCE": "Document Evidence Text Unreadable",
+    "LOW_CONFIDENCE_DOCUMENT_EVIDENCE": "Low-Confidence Document Extraction Evidence",
+    "DOCUMENT_VERIFICATION_DISCREPANCY": "Cross-Document Verification Discrepancy",
+    "DOCUMENT_CLASSIFICATION_MISMATCH": "Document Category Classification Mismatch",
+    "CORRUPTED_DOCUMENT_EVIDENCE": "Corrupted Document File Detected",
+    "UNSUPPORTED_DOCUMENT_EVIDENCE": "Unsupported Document Format Detected",
 }
 
 
@@ -186,6 +196,62 @@ def map_finding_to_recommendation(
         return DecisionRecommendation(
             action="CLARIFY_JURISDICTION_DETAILS",
             description="Confirm clearing method and statutory tax scheme for the vendor's registered jurisdiction.",
+            priority=priority,
+        )
+
+    if code == "MISSING_TAX_DOCUMENT":
+        return DecisionRecommendation(
+            action="UPLOAD_TAX_DOCUMENT",
+            description="Upload an official GST registration certificate, PAN card, or W-9/tax registration proof to verify the tax identifier.",
+            priority=priority,
+        )
+
+    if code == "MISSING_INCORPORATION_DOCUMENT":
+        return DecisionRecommendation(
+            action="UPLOAD_INCORPORATION_DOCUMENT",
+            description="Upload Certificate of Incorporation or company registration document to verify legal entity name and registration number.",
+            priority=priority,
+        )
+
+    if code == "MISSING_BANK_DOCUMENT":
+        return DecisionRecommendation(
+            action="UPLOAD_BANK_DOCUMENT",
+            description="Upload a cancelled cheque or bank statement showing account holder name, account number, and bank routing details.",
+            priority=priority,
+        )
+
+    if code == "MISSING_REQUIRED_DOCUMENT":
+        return DecisionRecommendation(
+            action="UPLOAD_COMPLIANCE_DOCUMENTS",
+            description="Upload required statutory compliance documents to support vendor verification.",
+            priority=priority,
+        )
+
+    if code in ("UNREADABLE_DOCUMENT_EVIDENCE", "LOW_CONFIDENCE_DOCUMENT_EVIDENCE"):
+        return DecisionRecommendation(
+            action="REUPLOAD_LEGIBLE_DOCUMENT",
+            description="Upload a higher-resolution scan or clear digital PDF of the document with legible text.",
+            priority=priority,
+        )
+
+    if code == "DOCUMENT_VERIFICATION_DISCREPANCY":
+        return DecisionRecommendation(
+            action="RESOLVE_DOCUMENT_DISCREPANCY",
+            description="Review flagged discrepancies between profile data and document text, and provide clarifying documentation or update details.",
+            priority=priority,
+        )
+
+    if code == "DOCUMENT_CLASSIFICATION_MISMATCH":
+        return DecisionRecommendation(
+            action="VERIFY_DOCUMENT_CATEGORY",
+            description="Confirm the uploaded document corresponds to the required category or upload the correct document.",
+            priority=priority,
+        )
+
+    if code in ("CORRUPTED_DOCUMENT_EVIDENCE", "UNSUPPORTED_DOCUMENT_EVIDENCE"):
+        return DecisionRecommendation(
+            action="REUPLOAD_VALID_DOCUMENT_FORMAT",
+            description="Upload an uncorrupted document file in a supported format (PDF, PNG, JPEG).",
             priority=priority,
         )
 

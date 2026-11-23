@@ -124,10 +124,13 @@ class DecisionService:
             vendor_dict["bank_account_number"] = None
 
         # 3. Run validation engine EXACTLY ONCE
+        val_ctx = {"is_stored_record": True, "stored_status": vendor.status}
+        if context:
+            val_ctx.update(context)
         validation_result = validation_engine.validate_vendor(
             vendor_data=vendor_dict,
             vendor_id=vendor.id,
-            context={"is_stored_record": True, "stored_status": vendor.status},
+            context=val_ctx,
         )
 
         # 4. Evaluate deterministic decision

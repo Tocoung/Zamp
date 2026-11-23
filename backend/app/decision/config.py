@@ -94,6 +94,20 @@ DEFAULT_FINDING_CODE_ACTIONS: Dict[str, DecisionAction] = {
     "ROUTING_BANK_COUNTRY_MISMATCH": DecisionAction.REVIEW,
     "UNUSUAL_ROUTING_LENGTH": DecisionAction.REVIEW,
 
+    # Document & Evidence Findings (Phase 2 Integration): REVIEW (PENDING)
+    # Low-confidence OCR, unreadable text, missing documents or verified discrepancies
+    # require human review (PENDING), NEVER automatic rejection.
+    "MISSING_TAX_DOCUMENT": DecisionAction.REVIEW,
+    "MISSING_INCORPORATION_DOCUMENT": DecisionAction.REVIEW,
+    "MISSING_BANK_DOCUMENT": DecisionAction.REVIEW,
+    "MISSING_REQUIRED_DOCUMENT": DecisionAction.REVIEW,
+    "UNREADABLE_DOCUMENT_EVIDENCE": DecisionAction.REVIEW,
+    "LOW_CONFIDENCE_DOCUMENT_EVIDENCE": DecisionAction.REVIEW,
+    "DOCUMENT_VERIFICATION_DISCREPANCY": DecisionAction.REVIEW,
+    "DOCUMENT_CLASSIFICATION_MISMATCH": DecisionAction.REVIEW,
+    "CORRUPTED_DOCUMENT_EVIDENCE": DecisionAction.REVIEW,
+    "UNSUPPORTED_DOCUMENT_EVIDENCE": DecisionAction.REVIEW,
+
     # Informational codes (non-blocking): IGNORE (APPROVED if no blockers)
     "CROSS_BORDER_OPERATIONS_NOTE": DecisionAction.IGNORE,
     "TAX_FORMAT_UNSUPPORTED_NOTE": DecisionAction.IGNORE,

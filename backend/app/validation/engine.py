@@ -102,6 +102,14 @@ class ValidationEngine:
                     )
                 )
 
+        # 3.1 Incorporate external document evidence findings if provided in execution context
+        if exec_context.get("document_evidence_findings"):
+            for ef in exec_context["document_evidence_findings"]:
+                if isinstance(ef, ValidationFinding):
+                    all_findings.append(ef)
+                elif isinstance(ef, dict):
+                    all_findings.append(ValidationFinding(**ef))
+
         # 4. Sort findings deterministically (Severity -> Field -> Rule ID)
         sorted_findings = sorted(
             all_findings,

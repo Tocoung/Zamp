@@ -2,8 +2,8 @@
 ## Architecture Design Document — Vendor Onboarding Automation
 
 **Author:** Lead Software Engineer  
-**Version:** 2.5.0 (Phase 2 — Step 5 Cross-Document Validation & Discrepancy Detection)  
-**Status:** Approved & Implemented Foundation, Security Hardening, Deterministic Validation, Decision Engine, End-to-End Integration, Document Intake, Storage Hardening, Document Classification, OCR Structured Information Extraction, Evidence Quality Scoring, Cross-Document Validation, Discrepancy Detection, & Operational Readiness  
+**Version:** 2.6.0 (Phase 2 — Step 6 Complete End-to-End Integration & Testing)  
+**Status:** Approved & Implemented Foundation, Security Hardening, Deterministic Validation, Decision Engine, End-to-End Integration, Document Intake, Storage Hardening, Document Classification, OCR Structured Information Extraction, Evidence Quality Scoring, Cross-Document Validation, Discrepancy Detection, Onboarding Orchestrator Pipeline, & Operational Readiness  
 
 ---
 
@@ -754,7 +754,72 @@ The Cross-Document Validation Engine provides a deterministic, multi-source veri
 
 ---
 
-## 16. Dependency Reproducibility Strategy
+## 16. End-to-End Onboarding Orchestration Architecture (Phase 2 — Step 6)
+
+The **Onboarding Orchestrator** (`backend/app/services/onboarding_orchestrator_service.py`) unifies the decoupled subsystems into an automated, fault-tolerant, 8-stage vendor onboarding workflow:
+
+```
+[ Vendor Intake ]
+       │
+       ▼
+[ Stage 1: Registration Profile Check ]
+       │
+       ▼
+[ Stage 2: Document Intake Audit & Snapshot ]
+       │
+       ▼
+[ Stage 3: Deterministic Classification ] (Per-doc isolated failure boundary)
+       │
+       ▼
+[ Stage 4: Multi-Format OCR Recognition ] (Digital PDF / Scanned Poppler / Image)
+       │
+       ▼
+[ Stage 5: Structured Field Extraction ] (Schema extraction & provenance)
+       │
+       ▼
+[ Stage 6: Evidence & Readability Assessment ] (Missing statutory doc detection)
+       │
+       ▼
+[ Stage 7: Cross-Document Verification ] (Pairwise cross-checking & discrepancies)
+       │
+       ▼
+[ Stage 8: Phase 1 Decision Engine Integration ] (Explainable APPROVED / PENDING / REJECTED)
+```
+
+### A. Architectural Invariants
+1. **Per-Document Failure Isolation:** Each document is evaluated independently inside isolated `try-except` blocks. If an uploaded document is corrupted, password-protected, or in an unsupported format, its failure is recorded as `FAILED` on that document, and all other eligible documents continue through classification, extraction, and verification.
+2. **Deterministic Change Detection & Idempotency:** The orchestrator snapshots the SHA-256 hashes of all uploaded documents along with the vendor record timestamp. Consecutive requests with identical inputs return the existing execution run with zero duplicate decision or activity records. Passing `force_reprocess=true` forces a complete re-evaluation.
+3. **Phase 1 Authority & Decision Engine Policy:** Phase 1 remains the ultimate authority for vendor adjudication. Evidence findings (`MISSING_TAX_DOCUMENT`, `UNREADABLE_DOCUMENT_EVIDENCE`, `DOCUMENT_VERIFICATION_DISCREPANCY`) are fed into Phase 1 validation context as reviewable findings:
+   - **Approved Submission:** Clean vendor profile + all statutory documents verified without discrepancies $\rightarrow$ `APPROVED`.
+   - **Review Submission:** Missing documents, low-confidence OCR, unreadable scans, or verified discrepancies $\rightarrow$ `PENDING` (Human Review Required).
+   - **Statutory Syntax Violations:** Invalid tax/phone/email formatting or dummy placeholder bank accounts continue to be blocked by Phase 1 rules $\rightarrow$ `REJECTED`.
+   - **Zero Auto-Rejection:** Uncertain OCR, blurry scans, or missing documents **NEVER** produce automatic rejection.
+4. **Data Integrity & Non-Mutation:** Extracted document values are comparison evidence only. Under no circumstances does the orchestrator overwrite or mutate vendor profile records.
+5. **Zero-Leakage Privacy Policy:** Masking is enforced across all API responses, run summaries, stage breakdowns, and activity events (`••••••••1234` for bank accounts; masked GSTIN, PAN, and CIN).
+
+### B. Persistent Models & Schema Contract
+- **`OnboardingProcessRun` (`onboarding_process_runs` table):**
+  - `id`: UUID primary key.
+  - `vendor_id`: Foreign key to `vendors.id`.
+  - `status`: `IN_PROGRESS`, `COMPLETED`, `PARTIAL_FAILURE`, `FAILED`.
+  - `trigger_source`: `MANUAL`, `REPROCESS`, `RETRY`.
+  - `total_documents`, `successful_documents`, `failed_documents`.
+  - `verification_run_id`: Reference to associated `VerificationRun`.
+  - `decision_id`: Reference to associated `VendorDecision`.
+  - `stage_results`: JSON dictionary detailing execution of all 8 pipeline stages.
+  - `document_breakdown`: JSON list containing per-document status, category, extraction status, field count, readability, and error notes.
+  - `documents_snapshot`: Checksum and version snapshot for change detection.
+  - `findings_summary`: Aggregate count of matches, confirmed discrepancies, potential discrepancies, missing docs, and failed docs.
+  - `created_at`, `completed_at`.
+
+### C. Operational REST API
+- `POST /api/v1/vendors/{vendor_id}/process-onboarding?force_reprocess={bool}`: Executes the complete 8-stage pipeline.
+- `GET /api/v1/vendors/{vendor_id}/onboarding-process/latest`: Retrieves the most recent execution run.
+- `GET /api/v1/vendors/{vendor_id}/onboarding-process/history`: Retrieves the immutable history of onboarding runs for a vendor.
+
+---
+
+## 17. Dependency Reproducibility Strategy
 
 For a one-week case study project, dependency management balances determinism with zero unnecessary tool overhead:
 - **Backend:** Pin explicit, exact versions in `backend/requirements.txt` (`==` pinning). Standard installation via `python3 -m venv .venv && pip install -r requirements.txt`. Includes `cryptography==50.0.2`, `pytesseract==0.3.13`, `pdf2image==1.17.0`, and `pillow==11.0.0`. System binaries: `tesseract` and `poppler` (`pdftoppm`).
