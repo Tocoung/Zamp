@@ -1133,12 +1133,15 @@ export interface DocumentProcessItem {
   file_name: string;
   file_type: string;
   category?: string | null;
+  declared_category?: string | null;
+  predicted_category?: string | null;
   classification_status: string;
   classification_confidence?: number | null;
   extraction_status: string;
   extracted_fields_count: number;
   average_confidence?: number | null;
   eligible_for_verification: boolean;
+  ineligible_reason_code?: string | null;
   error?: string | null;
 }
 

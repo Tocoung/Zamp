@@ -421,6 +421,7 @@ export const VendorDetailModal: React.FC<VendorDetailModalProps> = ({
           {/* Phase 2 Step 6: End-to-End Onboarding Process Panel */}
           {!isEditing && (
             <OnboardingProcessPanel
+              vendorId={vendor?.id || initialVendor?.id}
               run={onboardingRun}
               isProcessing={isProcessingOnboarding}
               onProcess={handleProcessOnboarding}

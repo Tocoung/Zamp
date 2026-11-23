@@ -669,9 +669,9 @@ The orchestration engine (`backend/app/services/onboarding_orchestrator_service.
 
 ## 9. Test Suites & Verification Coverage
 
-The application is thoroughly verified by **302 automated tests**:
+The application is thoroughly verified by **320 automated tests**:
 
-- `test_step6_e2e_integration.py`: 14 comprehensive end-to-end integration scenario tests covering:
+- `test_step6_e2e_integration.py`: 32 comprehensive end-to-end integration and orchestrator correctness tests covering:
   1. Complete matching submission (Digital PDF) $\rightarrow$ `APPROVED`
   2. Scanned OCR PDF with high confidence $\rightarrow$ `APPROVED`
   3. Multiple documents of the same type evaluated without duplicate pairings
@@ -682,10 +682,16 @@ The application is thoroughly verified by **302 automated tests**:
   8. Low-confidence OCR extraction $\rightarrow$ `PENDING` (Never rejected)
   9. Conflicting cross-document information $\rightarrow$ `PENDING` with discrepancy code
   10. Corrected document re-upload preserving historical audit trail
-  11. Persistence across backend restart
+  11. Persistence across backend restart (with database connection caching)
   12. Complete zero-leakage privacy & sensitive data masking audit
-  13. Idempotency and retry behavior (zero duplicate records)
+  13. Idempotency and retry behavior (COMPLETED cache only; PARTIAL_FAILURE immediately retryable)
   14. FastAPI REST endpoints (`POST /process-onboarding`, `GET /latest`, `GET /history`, 404 handling)
+  15. Classification eligibility boundary (declared vs predicted category distinction)
+  16. Inconclusive/failed classification generates stable reason codes and routes to `PENDING`
+  17. Single shared evidence boundary (`app.verification.eligibility`) across verification & decisioning
+  18. Re-upload & supersession lifecycle excluding superseded documents while preserving audit history
+  19. Error sanitization (no internal stack traces, system paths, or credentials leaked in API or DB)
+  20. Explicit model registration of `OnboardingProcessRun` in database metadata and tables
 - `test_verification_step5_1.py`: 15 regression tests covering multiple same-category documents, conflicting documents of the same type, re-uploaded corrected documents, incorrect classifications, UNKNOWN classifications, failed extractions, insufficient-text extractions, latest extraction selection, cross-vendor isolation, complete API zero-leakage privacy audit, and decision safety.
 - `test_verification_engine.py`: 19 tests validating normalization, Levenshtein distance, token sort ratio, token Jaccard similarity, and comparison primitives.
 - `test_verification_scenarios.py`: 13 end-to-end scenario tests covering matching vendors, GSTIN mismatch, legal name mismatch, minor name variation, cross-document conflicts, bank account holder mismatch, bank account number masking, address mismatch, address minor variation, missing documents, unreadable documents, low-confidence OCR, and status transition.

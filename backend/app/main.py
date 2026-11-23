@@ -54,6 +54,7 @@ async def lifespan(app: FastAPI):
         from app.models.classification import DocumentClassification  # noqa: F401 - ensure classification model registered
         from app.models.extraction import DocumentExtraction  # noqa: F401 - ensure extraction model registered
         from app.models.verification import VerificationRun, VerificationFinding  # noqa: F401 - ensure verification models registered
+        from app.models.onboarding_process import OnboardingProcessRun  # noqa: F401 - ensure onboarding process model registered
         Base.metadata.create_all(bind=engine)
         logger.info("Database schema verified and initialized.")
 

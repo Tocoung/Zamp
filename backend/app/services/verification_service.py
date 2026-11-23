@@ -183,7 +183,10 @@ class VerificationService:
         documents = list(
             db.scalars(
                 select(VendorDocument)
-                .where(VendorDocument.vendor_id == vendor.id)
+                .where(
+                    VendorDocument.vendor_id == vendor.id,
+                    VendorDocument.upload_status.notin_(["SUPERSEDED", "DELETED", "INACTIVE"]),
+                )
                 .order_by(VendorDocument.created_at.asc())
             ).all()
         )

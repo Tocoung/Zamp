@@ -25,6 +25,7 @@ from app.verification.rules import (
     VerificationRuleContext,
     build_doc_evidence,
 )
+from app.verification.eligibility import evaluate_document_eligibility
 
 
 class VerificationEngine:
@@ -67,75 +68,17 @@ class VerificationEngine:
         eligibility_findings: List[EvaluatedRuleFinding] = []
 
         for doc in vendor_docs:
-            decl_cat = (doc.document_category or "OTHER").upper()
             c = latest_classifications.get(doc.id)
             e = latest_extractions.get(doc.id)
+            elig_res = evaluate_document_eligibility(doc, c, e)
 
-            # --- Classification Eligibility Check (Requirement 2) ---
-            is_c_confirmed = False
-            c_conflict = False
-            c_note = None
-
-            if not c:
-                # Document has not undergone classification
-                is_c_confirmed = False
-                c_conflict = False
-                c_note = f"Document '{doc.original_filename}' has not been classified; declared category '{decl_cat}' is unconfirmed."
-            else:
-                pred_cat = (c.predicted_category or "UNKNOWN").upper()
-                c_status = (c.status or "").upper()
-
-                if c_status in ("UNKNOWN", "INSUFFICIENT_TEXT", "FAILED") or pred_cat in ("UNKNOWN", "OTHER"):
-                    is_c_confirmed = False
-                    c_conflict = False
-                    c_note = (
-                        f"Document '{doc.original_filename}' classification is inconclusive "
-                        f"({c_status}, predicted: {pred_cat}, confidence: {c.confidence_score:.2f}). "
-                        f"Cannot be used as confirmed {decl_cat} evidence."
-                    )
-                elif c_status == "CLASSIFIED" and pred_cat != decl_cat:
-                    is_c_confirmed = False
-                    c_conflict = True
-                    c_note = (
-                        f"Classification conflict detected for '{doc.original_filename}': "
-                        f"Declared as '{decl_cat}' but classified as '{pred_cat}' (confidence: {c.confidence_score:.2f}). "
-                        f"Document evidence cannot be used as valid {decl_cat}."
-                    )
-                elif c_status == "CLASSIFIED" and pred_cat == decl_cat:
-                    is_c_confirmed = True
-                    c_conflict = False
-                    c_note = None
-                else:
-                    is_c_confirmed = False
-                    c_conflict = False
-                    c_note = f"Document '{doc.original_filename}' classification status '{c_status}' is unconfirmed."
-
-            # --- Extraction Eligibility Check (Requirement 3) ---
-            is_e_eligible = False
-            e_note = None
-            parsed_fields: Dict[str, ExtractedField] = {}
-
-            if not e:
-                is_e_eligible = False
-                e_note = f"No extraction run found for document '{doc.original_filename}'."
-            else:
-                e_status = (e.status or "").upper()
-                if e_status in ("FAILED", "ERROR"):
-                    is_e_eligible = False
-                    e_note = f"Extraction failed for '{doc.original_filename}': {e.limitation_code or 'technical failure'}."
-                elif e_status in ("INSUFFICIENT_TEXT", "UNREADABLE"):
-                    is_e_eligible = False
-                    e_note = f"Document '{doc.original_filename}' contains insufficient readable text for reliable extraction."
-                else:
-                    # COMPLETED, PARTIAL, EXTRACTED
-                    is_e_eligible = True
-                    e_note = None
-                    for k, v in (e.fields or {}).items():
-                        if isinstance(v, dict):
-                            try:
-                                parsed_fields[k] = ExtractedField.model_validate(v)
-                            except Exception:
-                                pass
+            decl_cat = elig_res.declared_category
+            is_c_confirmed = elig_res.is_classification_confirmed
+            c_conflict = elig_res.classification.is_conflict
+            c_note = elig_res.classification.explanation if not is_c_confirmed else None
+            is_e_eligible = elig_res.is_extraction_eligible
+            e_note = elig_res.extraction.explanation if not is_e_eligible else None
+            parsed_fields = elig_res.extraction.fields
 
             # Assemble DocumentEvidenceContext
             doc_ctx = DocumentEvidenceContext(

@@ -18,15 +18,13 @@ import {
   Loader2,
   Filter,
   ShieldCheck,
-  ExternalLink,
+  AlertCircle,
 } from 'lucide-react';
 import {
   VerificationRunResponse,
-  VerificationFinding,
   VerificationRunStatus,
   FindingResult,
   FindingSeverity,
-  EvidenceSource,
   VerificationRunSummary,
   runVendorVerification,
   fetchLatestVerification,

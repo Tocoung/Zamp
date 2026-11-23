@@ -19,12 +19,15 @@ class DocumentProcessItem(BaseModel):
     file_name: str
     file_type: str
     category: Optional[str] = None
+    declared_category: Optional[str] = None
+    predicted_category: Optional[str] = None
     classification_status: str
     classification_confidence: Optional[float] = None
     extraction_status: str
     extracted_fields_count: int = 0
     average_confidence: Optional[float] = None
     eligible_for_verification: bool = True
+    ineligible_reason_code: Optional[str] = None
     error: Optional[str] = None
 
 

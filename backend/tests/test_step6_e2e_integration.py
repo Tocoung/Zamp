@@ -466,11 +466,11 @@ def test_scenario_10_corrected_document_reupload(db: Session):
 
 
 # ============================================================================
-# Scenario 11: Persistence Across Backend Restart
+# Scenario 11: Database Persistence Across Session Expiration
 # ============================================================================
 
-def test_scenario_11_persistence_across_restart(db: Session):
-    """All process runs, stage results, and decisions persist cleanly in database."""
+def test_scenario_11_database_persistence_across_session_expiration(db: Session):
+    """Process runs, stage results, and decisions persist cleanly across DB session reload (database persistence test)."""
     v = seed_test_vendor(db)
     seed_doc_with_extraction(
         db, v.id, "TAX_CERTIFICATE", "gst.pdf",
@@ -480,7 +480,7 @@ def test_scenario_11_persistence_across_restart(db: Session):
     run = onboarding_orchestrator.process_vendor_onboarding(db, v.id)
     run_id = run.id
 
-    # Commit and close session to simulate restart
+    # Commit and close session to simulate fresh database connection reload
     db.commit()
     db.expire_all()
 
@@ -587,3 +587,467 @@ def test_scenario_14_api_endpoints(db: Session, client: TestClient):
     fake_id = str(uuid.uuid4())
     not_found_res = client.post(f"/api/v1/vendors/{fake_id}/process-onboarding")
     assert not_found_res.status_code == 404
+
+
+# ============================================================================
+# Section 1: Classification Eligibility Tests
+# ============================================================================
+
+def test_classification_eligibility_declared_tax_predicted_unknown(db: Session):
+    """Declared TAX_CERTIFICATE with predicted UNKNOWN does not satisfy mandatory requirement."""
+    v = seed_test_vendor(db)
+    # Declared TAX_CERTIFICATE, but classifier returned UNKNOWN
+    seed_doc_with_extraction(
+        db, v.id, "TAX_CERTIFICATE", "unclear_tax.pdf",
+        {"raw_text": "Sample text without tax keywords"},
+        classification_status="LOW_CONFIDENCE",
+        predicted_category="UNKNOWN",
+    )
+    # Valid COI and Bank Proof
+    seed_doc_with_extraction(
+        db, v.id, "CERTIFICATE_OF_INCORPORATION", "coi.pdf",
+        {"cin": v.registration_number, "company_name": v.legal_name},
+    )
+    seed_doc_with_extraction(
+        db, v.id, "BANK_PROOF", "bank.pdf",
+        {"account_number": "987123456789", "ifsc": v.bank_routing_number},
+    )
+
+    run = onboarding_orchestrator.process_vendor_onboarding(db, v.id)
+
+    # Must report MISSING_TAX_DOCUMENT because inconclusive classification cannot satisfy requirement
+    assert run.decision_status == "PENDING"
+    assert "MISSING_TAX_DOCUMENT" in run.decision_reasons
+    # Document breakdown must flag that the document was ineligible for verification
+    tax_item = next(d for d in run.document_breakdown if d.file_name == "unclear_tax.pdf")
+    assert tax_item.eligible_for_verification is False
+    assert tax_item.declared_category == "TAX_CERTIFICATE"
+    assert tax_item.predicted_category == "UNKNOWN"
+    assert tax_item.ineligible_reason_code == "LOW_CONFIDENCE_DOCUMENT_EVIDENCE"
+
+
+def test_classification_eligibility_declared_bank_predicted_other(db: Session):
+    """Declared BANK_PROOF with predicted OTHER does not satisfy mandatory bank requirement."""
+    v = seed_test_vendor(db)
+    seed_doc_with_extraction(
+        db, v.id, "TAX_CERTIFICATE", "gst.pdf",
+        {"gstin": v.tax_id_number, "legal_name": v.legal_name},
+    )
+    seed_doc_with_extraction(
+        db, v.id, "CERTIFICATE_OF_INCORPORATION", "coi.pdf",
+        {"cin": v.registration_number, "company_name": v.legal_name},
+    )
+    # Declared BANK_PROOF, but classified as OTHER
+    seed_doc_with_extraction(
+        db, v.id, "BANK_PROOF", "invoice_misc.pdf",
+        {"amount": "1000"},
+        classification_status="CLASSIFIED",
+        predicted_category="OTHER",
+    )
+
+    run = onboarding_orchestrator.process_vendor_onboarding(db, v.id)
+
+    assert run.decision_status == "PENDING"
+    assert "MISSING_BANK_DOCUMENT" in run.decision_reasons
+    bank_item = next(d for d in run.document_breakdown if d.file_name == "invoice_misc.pdf")
+    assert bank_item.eligible_for_verification is False
+    assert bank_item.ineligible_reason_code == "UNSUPPORTED_DOCUMENT_EVIDENCE"
+
+
+def test_classification_eligibility_confident_matching(db: Session):
+    """Confident matching classification qualifies document for verification and satisfies requirement."""
+    v = seed_test_vendor(db)
+    seed_doc_with_extraction(
+        db, v.id, "TAX_CERTIFICATE", "valid_gst.pdf",
+        {"gstin": v.tax_id_number, "legal_name": v.legal_name},
+        classification_status="CLASSIFIED",
+        predicted_category="TAX_CERTIFICATE",
+    )
+    seed_doc_with_extraction(
+        db, v.id, "CERTIFICATE_OF_INCORPORATION", "valid_coi.pdf",
+        {"cin": v.registration_number, "company_name": v.legal_name},
+        classification_status="CLASSIFIED",
+        predicted_category="CERTIFICATE_OF_INCORPORATION",
+    )
+    seed_doc_with_extraction(
+        db, v.id, "BANK_PROOF", "valid_bank.pdf",
+        {"account_number": "987123456789", "ifsc": v.bank_routing_number},
+        classification_status="CLASSIFIED",
+        predicted_category="BANK_PROOF",
+    )
+
+    run = onboarding_orchestrator.process_vendor_onboarding(db, v.id)
+
+    assert run.status == "COMPLETED"
+    assert run.decision_status == "APPROVED"
+    assert run.total_documents == 3
+    assert run.successful_documents == 3
+    for d in run.document_breakdown:
+        assert d.eligible_for_verification is True
+        assert d.ineligible_reason_code is None
+
+
+def test_classification_eligibility_conflicting_categories(db: Session):
+    """Declared category conflicting with predicted category generates DOCUMENT_CLASSIFICATION_MISMATCH."""
+    v = seed_test_vendor(db)
+    # Declared as TAX_CERTIFICATE, but classified as BANK_PROOF
+    seed_doc_with_extraction(
+        db, v.id, "TAX_CERTIFICATE", "cheque_as_tax.pdf",
+        {"account_number": "987123456789"},
+        classification_status="CLASSIFIED",
+        predicted_category="BANK_PROOF",
+    )
+
+    run = onboarding_orchestrator.process_vendor_onboarding(db, v.id)
+
+    assert run.decision_status == "PENDING"
+    assert "DOCUMENT_CLASSIFICATION_MISMATCH" in run.decision_reasons
+    doc_item = run.document_breakdown[0]
+    assert doc_item.eligible_for_verification is False
+    assert doc_item.ineligible_reason_code == "DOCUMENT_CLASSIFICATION_MISMATCH"
+
+
+def test_classification_eligibility_failure(db: Session):
+    """Failed classification execution is safely handled and marked ineligible without crash."""
+    v = seed_test_vendor(db)
+    seed_doc_with_extraction(
+        db, v.id, "TAX_CERTIFICATE", "unparseable.pdf",
+        {},
+        classification_status="FAILED",
+        predicted_category=None,
+    )
+
+    run = onboarding_orchestrator.process_vendor_onboarding(db, v.id)
+
+    assert run.decision_status == "PENDING"
+    doc_item = run.document_breakdown[0]
+    assert doc_item.eligible_for_verification is False
+    assert doc_item.classification_status == "FAILED"
+
+
+# ============================================================================
+# Section 2: Consistent Evidence-Eligibility Boundary Tests
+# ============================================================================
+
+def test_evidence_boundary_ineligible_doc_cannot_create_false_matches_or_discrepancies(db: Session):
+    """Ineligible documents (classification conflict or failed extraction) cannot contribute evidence."""
+    v = seed_test_vendor(db)
+
+    # Document declared as TAX_CERTIFICATE but content has conflicting classification (BANK_PROOF)
+    # and has a deliberately wrong tax number
+    seed_doc_with_extraction(
+        db, v.id, "TAX_CERTIFICATE", "invalid_tax_doc.pdf",
+        {"gstin": "WRONG_GSTIN_12345"},
+        classification_status="CLASSIFIED",
+        predicted_category="BANK_PROOF",
+    )
+
+    run = onboarding_orchestrator.process_vendor_onboarding(db, v.id)
+
+    # It must NOT create a confirmed GSTIN discrepancy against vendor profile,
+    # because the document was ineligible for tax evidence!
+    cross_verif = run.stage_results.get("7_cross_verification", {})
+    assert cross_verif.get("confirmed_discrepancies", 0) == 0
+    # It routes to PENDING because of missing valid tax document and classification mismatch
+    assert run.decision_status == "PENDING"
+
+
+# ============================================================================
+# Section 3: Retry & Idempotency Correctness Tests
+# ============================================================================
+
+def test_idempotency_successful_run_cached_no_duplicate_decisions(db: Session):
+    """Unchanged successful inputs reuse the cached run and create zero new decisions."""
+    v = seed_test_vendor(db)
+    seed_doc_with_extraction(
+        db, v.id, "TAX_CERTIFICATE", "gst.pdf",
+        {"gstin": v.tax_id_number, "legal_name": v.legal_name},
+    )
+    seed_doc_with_extraction(
+        db, v.id, "CERTIFICATE_OF_INCORPORATION", "coi.pdf",
+        {"cin": v.registration_number, "company_name": v.legal_name},
+    )
+    seed_doc_with_extraction(
+        db, v.id, "BANK_PROOF", "bank.pdf",
+        {"account_number": "987123456789", "ifsc": v.bank_routing_number},
+    )
+
+    run1 = onboarding_orchestrator.process_vendor_onboarding(db, v.id)
+    assert run1.status == "COMPLETED"
+    d_count_1 = db.query(VendorDecision).filter(VendorDecision.vendor_id == v.id).count()
+
+    # Repeat without force
+    run2 = onboarding_orchestrator.process_vendor_onboarding(db, v.id, force_reprocess=False)
+    d_count_2 = db.query(VendorDecision).filter(VendorDecision.vendor_id == v.id).count()
+
+    assert run1.id == run2.id
+    assert d_count_1 == d_count_2
+
+
+def test_retry_partial_failure_not_cached(db: Session):
+    """A PARTIAL_FAILURE run is NOT cached; retrying without force executes a fresh run."""
+    v = seed_test_vendor(db)
+    # Seed with an extraction failure
+    doc, ext = seed_doc_with_extraction(
+        db, v.id, "TAX_CERTIFICATE", "gst.pdf",
+        {},
+        extraction_status="FAILED",
+        limitation_code="CORRUPTED_DOCUMENT",
+    )
+
+    run1 = onboarding_orchestrator.process_vendor_onboarding(db, v.id)
+    assert run1.status == "PARTIAL_FAILURE"
+
+    # Now simulate recovery by updating extraction record to completed
+    ext.status = "COMPLETED"
+    ext.limitation_code = None
+    ext.fields = {
+        "gstin": {"field_name": "gstin", "value": v.tax_id_number, "confidence": 0.95, "status": "EXTRACTED"},
+        "legal_name": {"field_name": "legal_name", "value": v.legal_name, "confidence": 0.95, "status": "EXTRACTED"},
+    }
+    db.commit()
+
+    # Retry without force_reprocess: MUST re-execute because run1 was PARTIAL_FAILURE
+    run2 = onboarding_orchestrator.process_vendor_onboarding(db, v.id, force_reprocess=False)
+    assert run2.id != run1.id
+    assert run2.status == "COMPLETED"
+
+
+def test_retry_failed_run_not_cached(db: Session):
+    """A FAILED run does not block retry and re-executes cleanly."""
+    v = seed_test_vendor(db)
+    seed_doc_with_extraction(
+        db, v.id, "TAX_CERTIFICATE", "gst.pdf",
+        {"gstin": v.tax_id_number, "legal_name": v.legal_name},
+    )
+
+    # Manually insert a FAILED process run
+    failed_run = OnboardingProcessRun(
+        vendor_id=v.id,
+        status="FAILED",
+        trigger_source="MANUAL",
+        documents_snapshot={},
+        stage_results={},
+        document_breakdown=[],
+        findings_summary={},
+        error_message="Simulated technical crash",
+    )
+    db.add(failed_run)
+    db.commit()
+
+    # Retry without force_reprocess must execute freshly and not return the failed run
+    run = onboarding_orchestrator.process_vendor_onboarding(db, v.id, force_reprocess=False)
+    assert run.id != failed_run.id
+    assert run.status == "COMPLETED"
+
+
+def test_cache_invalidation_document_checksum_changed(db: Session):
+    """Changing document checksum invalidates cache and triggers new execution."""
+    v = seed_test_vendor(db)
+    doc, ext = seed_doc_with_extraction(
+        db, v.id, "TAX_CERTIFICATE", "gst.pdf",
+        {"gstin": v.tax_id_number, "legal_name": v.legal_name},
+    )
+
+    run1 = onboarding_orchestrator.process_vendor_onboarding(db, v.id)
+    assert run1.status == "COMPLETED"
+
+    # Mutate checksum on document (simulating re-upload)
+    doc.sha256_checksum = "b" * 64
+    db.commit()
+
+    run2 = onboarding_orchestrator.process_vendor_onboarding(db, v.id, force_reprocess=False)
+    assert run2.id != run1.id
+
+
+def test_cache_invalidation_document_category_changed(db: Session):
+    """Changing document category invalidates cache and triggers new execution."""
+    v = seed_test_vendor(db)
+    doc, ext = seed_doc_with_extraction(
+        db, v.id, "OTHER", "doc.pdf",
+        {"note": "general text"},
+    )
+
+    run1 = onboarding_orchestrator.process_vendor_onboarding(db, v.id)
+
+    # Update category
+    doc.document_category = "TAX_CERTIFICATE"
+    db.commit()
+
+    run2 = onboarding_orchestrator.process_vendor_onboarding(db, v.id, force_reprocess=False)
+    assert run2.id != run1.id
+
+
+def test_cache_invalidation_profile_field_changed(db: Session):
+    """Modifying vendor profile fields invalidates cache."""
+    v = seed_test_vendor(db)
+    seed_doc_with_extraction(
+        db, v.id, "TAX_CERTIFICATE", "gst.pdf",
+        {"gstin": v.tax_id_number, "legal_name": v.legal_name},
+    )
+
+    run1 = onboarding_orchestrator.process_vendor_onboarding(db, v.id)
+
+    # Update profile
+    v.legal_name = "Acme Global Solutions Private Limited"
+    v.updated_at = datetime.now(timezone.utc)
+    db.commit()
+
+    run2 = onboarding_orchestrator.process_vendor_onboarding(db, v.id, force_reprocess=False)
+    assert run2.id != run1.id
+
+
+def test_force_reprocess_creates_new_traceable_run(db: Session):
+    """Explicit force_reprocess always generates a new run with trigger_source REPROCESS."""
+    v = seed_test_vendor(db)
+    seed_doc_with_extraction(
+        db, v.id, "TAX_CERTIFICATE", "gst.pdf",
+        {"gstin": v.tax_id_number, "legal_name": v.legal_name},
+    )
+
+    run1 = onboarding_orchestrator.process_vendor_onboarding(db, v.id)
+    run2 = onboarding_orchestrator.process_vendor_onboarding(db, v.id, force_reprocess=True)
+
+    assert run2.id != run1.id
+    assert run2.trigger_source == "REPROCESS"
+
+
+# ============================================================================
+# Section 4: Database Model Registration & Foreign Key Resolution
+# ============================================================================
+
+def test_database_model_registration_onboarding_process_run():
+    """Verifies OnboardingProcessRun table, columns, and foreign keys are explicitly registered in Base.metadata."""
+    from app.db.base import Base
+    from app.models.onboarding_process import OnboardingProcessRun
+
+    table = Base.metadata.tables.get("onboarding_process_runs")
+    assert table is not None, "Table 'onboarding_process_runs' must be registered in Base.metadata"
+
+    # Verify column existence
+    col_names = {c.name for c in table.columns}
+    required_cols = {
+        "id", "vendor_id", "status", "trigger_source", "total_documents",
+        "successful_documents", "failed_documents", "verification_run_id",
+        "decision_id", "stage_results", "document_breakdown", "documents_snapshot",
+        "findings_summary", "error_message", "created_at", "completed_at",
+    }
+    assert required_cols.issubset(col_names)
+
+    # Verify foreign keys
+    fks = {fk.target_fullname for fk in table.foreign_keys}
+    assert "vendors.id" in fks
+    assert "vendor_verifications.id" in fks
+    assert "vendor_decisions.id" in fks
+
+
+# ============================================================================
+# Section 6: Document Lifecycle & Supersession Tests
+# ============================================================================
+
+def test_multiple_active_documents_both_evaluated(db: Session):
+    """Multiple active documents of the same category without supersession are both evaluated."""
+    v = seed_test_vendor(db)
+    # First GST
+    seed_doc_with_extraction(
+        db, v.id, "TAX_CERTIFICATE", "gst_v1.pdf",
+        {"gstin": v.tax_id_number, "legal_name": v.legal_name},
+    )
+    # Second GST with contradictory GSTIN
+    seed_doc_with_extraction(
+        db, v.id, "TAX_CERTIFICATE", "gst_v2.pdf",
+        {"gstin": "06AAAAA9999A1Z1", "legal_name": v.legal_name},
+    )
+
+    run = onboarding_orchestrator.process_vendor_onboarding(db, v.id)
+
+    assert run.total_documents == 2
+    assert len(run.document_breakdown) == 2
+    # Because both remain active and conflict, vendor routes to PENDING for review
+    assert run.decision_status == "PENDING"
+    assert "DOCUMENT_VERIFICATION_DISCREPANCY" in run.decision_reasons
+
+
+def test_superseded_document_lifecycle(db: Session):
+    """A document marked upload_status='SUPERSEDED' is excluded from active onboarding evaluation."""
+    v = seed_test_vendor(db)
+    # Valid active GST
+    seed_doc_with_extraction(
+        db, v.id, "TAX_CERTIFICATE", "gst_active.pdf",
+        {"gstin": v.tax_id_number, "legal_name": v.legal_name},
+    )
+    # Superseded older conflicting GST
+    old_doc, old_ext = seed_doc_with_extraction(
+        db, v.id, "TAX_CERTIFICATE", "gst_superseded.pdf",
+        {"gstin": "WRONG_GSTIN_OLD", "legal_name": v.legal_name},
+    )
+    old_doc.upload_status = "SUPERSEDED"
+    db.commit()
+
+    run = onboarding_orchestrator.process_vendor_onboarding(db, v.id)
+
+    # Only active document should be evaluated
+    assert run.total_documents == 1
+    assert run.document_breakdown[0].file_name == "gst_active.pdf"
+    # Old document does not contaminate the active run
+    assert not any(d.file_name == "gst_superseded.pdf" for d in run.document_breakdown)
+
+
+# ============================================================================
+# Section 8: Error Sanitization & Zero-Leakage Privacy Tests
+# ============================================================================
+
+def test_error_sanitization_zero_internal_path_leakage(db: Session):
+    """Critical exception in pipeline must sanitize error message without leaking paths or secrets."""
+    v = seed_test_vendor(db)
+
+    # Force a failure by providing an invalid vendor ID directly to an internal stage
+    from unittest.mock import patch
+
+    with patch.object(onboarding_orchestrator.classification_service, "classify_vendor_document", side_effect=ValueError("Sensitive database /var/lib/secret/key.pem internal error")):
+        # Seed doc to trigger classification
+        seed_doc_with_extraction(
+            db, v.id, "TAX_CERTIFICATE", "doc.pdf",
+            {"gstin": v.tax_id_number},
+        )
+        # Should catch gracefully and record safe error
+        run = onboarding_orchestrator.process_vendor_onboarding(db, v.id, force_reprocess=True)
+
+        assert run.status in ("PARTIAL_FAILURE", "COMPLETED", "FAILED")
+        run_str = str(run.model_dump())
+        assert "/var/lib/secret/key.pem" not in run_str, "Sensitive file path leaked in run response!"
+
+
+# ============================================================================
+# Section 7: Synthetic File Intake & Actual Pipeline Processing Test
+# ============================================================================
+
+def test_synthetic_file_intake_and_orchestrator_pipeline(db: Session):
+    """Tests the full orchestrator path starting from actual synthetic file upload."""
+    from app.services.document_service import document_service
+
+    v = seed_test_vendor(db)
+
+    # Synthetic text file payload representing a statutory tax certificate
+    tax_content = b"%PDF-1.4\n1 0 obj\n<< /Title (GST Certificate) >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF"
+
+    doc = document_service.upload_vendor_document(
+        db=db,
+        vendor_id=v.id,
+        filename="synthetic_gst.pdf",
+        declared_content_type="application/pdf",
+        content=tax_content,
+        category="TAX_CERTIFICATE",
+    )
+    assert doc.id is not None
+    assert doc.upload_status == "UPLOADED"
+
+    # Execute onboarding process with actual uploaded file
+    run = onboarding_orchestrator.process_vendor_onboarding(db, v.id, force_reprocess=True)
+
+    assert run.vendor_id == v.id
+    assert run.total_documents >= 1
+    assert len(run.document_breakdown) >= 1
+    assert run.document_breakdown[0].document_id == str(doc.id)
+    assert run.stage_results["2_document_intake"]["status"] == "COMPLETED"
+

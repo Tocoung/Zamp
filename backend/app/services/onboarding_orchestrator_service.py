@@ -29,6 +29,11 @@ from app.services.verification_service import VerificationService
 from app.services.decision_service import DecisionService
 from app.validation.models import ValidationFinding, Severity
 from app.verification.normalization import mask_account_number
+from app.verification.eligibility import (
+    evaluate_classification_eligibility,
+    evaluate_extraction_eligibility,
+    canonicalize_category,
+)
 from app.core.logging import logger
 
 
@@ -128,20 +133,28 @@ class OnboardingOrchestratorService:
         if not vendor:
             raise VendorNotFoundError(f"Vendor with ID '{vendor_id}' not found.")
 
-        # 2. Retrieve all active documents for vendor
+        # 2. Retrieve all active documents for vendor (ignoring superseded, deleted, or inactive)
         documents: List[VendorDocument] = db.scalars(
             select(VendorDocument)
-            .where(VendorDocument.vendor_id == vendor_id)
+            .where(
+                VendorDocument.vendor_id == vendor_id,
+                VendorDocument.upload_status.notin_(["SUPERSEDED", "DELETED", "INACTIVE"]),
+            )
             .order_by(VendorDocument.created_at.asc(), VendorDocument.id.asc())
         ).all()
 
-        # Build documents snapshot for change detection
+        # Build comprehensive documents snapshot for change detection
         docs_snapshot = {
             str(doc.id): {
                 "sha256": doc.sha256_checksum,
                 "version": doc.document_version,
-                "filename": doc.original_filename,
+                "filename": doc.sanitized_filename or doc.original_filename,
                 "category": doc.document_category,
+                "upload_status": doc.upload_status,
+                "classification_id": str(doc.latest_classification.id) if doc.latest_classification else None,
+                "classification_status": doc.latest_classification.status if doc.latest_classification else None,
+                "extraction_id": str(doc.latest_extraction.id) if doc.latest_extraction else None,
+                "extraction_status": doc.latest_extraction.status if doc.latest_extraction else None,
             }
             for doc in documents
         }
@@ -150,10 +163,15 @@ class OnboardingOrchestratorService:
             "registration_number": vendor.registration_number,
             "tax_id_number": vendor.tax_id_number,
             "address_line1": vendor.address_line1,
+            "bank_account_holder_name": vendor.bank_account_holder_name,
+            "bank_name": vendor.bank_name,
+            "bank_routing_number": vendor.bank_routing_number,
+            "business_type": vendor.business_type,
+            "country_of_incorporation": vendor.country_of_incorporation,
             "updated_at": vendor.updated_at.isoformat() if vendor.updated_at else None,
         }
 
-        # Check latest process run for idempotency
+        # Check latest process run for idempotency (ONLY fully COMPLETED runs are cached)
         latest_run = db.scalar(
             select(OnboardingProcessRun)
             .where(OnboardingProcessRun.vendor_id == vendor_id)
@@ -164,7 +182,7 @@ class OnboardingOrchestratorService:
         if (
             not force_reprocess
             and latest_run
-            and latest_run.status in ("COMPLETED", "PARTIAL_FAILURE")
+            and latest_run.status == "COMPLETED"
             and latest_run.documents_snapshot == docs_snapshot
             and (latest_run.stage_results or {}).get("vendor_profile_snapshot") == vendor_profile_snapshot
         ):
@@ -225,21 +243,26 @@ class OnboardingOrchestratorService:
             seen_categories = set()
 
             for doc in documents:
+                file_display_name = doc.sanitized_filename or doc.original_filename
                 doc_item: Dict[str, Any] = {
                     "document_id": str(doc.id),
-                    "file_name": doc.original_filename,
+                    "file_name": file_display_name,
                     "file_type": doc.mime_type,
                     "category": doc.document_category,
+                    "declared_category": doc.document_category,
+                    "predicted_category": None,
                     "classification_status": "PENDING",
                     "classification_confidence": None,
                     "extraction_status": "PENDING",
                     "extracted_fields_count": 0,
                     "average_confidence": None,
                     "eligible_for_verification": True,
+                    "ineligible_reason_code": None,
                     "error": None,
                 }
 
-                # Step 3: Classification
+                # Step 3: Classification Execution
+                cls_record = None
                 try:
                     cls_record = doc.latest_classification
                     if not cls_record or force_reprocess:
@@ -251,32 +274,56 @@ class OnboardingOrchestratorService:
                     
                     doc_item["classification_status"] = cls_record.status
                     doc_item["classification_confidence"] = cls_record.confidence_score
-                    if cls_record.predicted_category and cls_record.predicted_category not in ("UNKNOWN", "OTHER"):
-                        doc_item["category"] = cls_record.predicted_category
-                        seen_categories.add(cls_record.predicted_category)
-                    else:
-                        seen_categories.add(doc.document_category)
+                    doc_item["predicted_category"] = cls_record.predicted_category
                     classified_count += 1
                 except Exception as e:
-                    logger.warning("Classification failed for document %s: %s", doc.id, str(e))
+                    logger.warning("Classification failed for document %s: %s", doc.id, type(e).__name__)
                     doc_item["classification_status"] = "FAILED"
                     doc_item["eligible_for_verification"] = False
-                    doc_item["error"] = f"Classification failed: {type(e).__name__}"
+                    doc_item["ineligible_reason_code"] = "DOCUMENT_CLASSIFICATION_FAILED"
+                    doc_item["error"] = f"Classification execution failed ({type(e).__name__})"
                     failed_docs += 1
-                    doc_breakdown.append(doc_item)
                     evidence_findings.append(
                         ValidationFinding(
                             rule_id="EVID_CLASSIFICATION_FAILED",
                             field="documents",
                             code="DOCUMENT_CLASSIFICATION_MISMATCH",
-                            message=f"Document '{doc.original_filename}' could not be classified ({type(e).__name__}).",
+                            message=f"Document '{file_display_name}' could not be classified.",
                             severity=Severity.WARNING,
                             suggestion="Confirm the document is in a standard format and readable.",
                         )
                     )
-                    continue
+
+                # Shared Classification Eligibility Assessment
+                cls_elig = evaluate_classification_eligibility(
+                    declared_category=doc.document_category,
+                    classification=cls_record,
+                    filename=file_display_name,
+                )
+
+                if cls_elig.is_confirmed:
+                    # Satisfies mandatory category requirement and confirms evidence category
+                    doc_item["category"] = cls_elig.effective_category
+                    seen_categories.add(cls_elig.effective_category)
+                else:
+                    # Inconclusive, conflict, or failed: MUST NOT satisfy mandatory category
+                    doc_item["category"] = doc.document_category
+                    doc_item["eligible_for_verification"] = False
+                    doc_item["ineligible_reason_code"] = cls_elig.reason_code
+                    doc_item["error"] = cls_elig.explanation
+                    evidence_findings.append(
+                        ValidationFinding(
+                            rule_id=f"EVID_{cls_elig.reason_code}",
+                            field="documents",
+                            code=cls_elig.reason_code,
+                            message=cls_elig.explanation,
+                            severity=Severity.WARNING,
+                            suggestion="Ensure uploaded document content matches the declared statutory category.",
+                        )
+                    )
 
                 # Step 4 & 5: OCR and Structured Information Extraction
+                ext_record = None
                 try:
                     ext_record = doc.latest_extraction
                     if not ext_record or force_reprocess:
@@ -286,64 +333,53 @@ class OnboardingOrchestratorService:
                             document_id=str(doc.id),
                         )
 
-                    doc_item["extraction_status"] = ext_record.status
-                    doc_item["extracted_fields_count"] = ext_record.extracted_fields_count or len(ext_record.fields or {})
-                    scores = [
-                        f.get("confidence_score")
-                        for f in (ext_record.fields or {}).values()
-                        if isinstance(f, dict) and f.get("confidence_score") is not None
-                    ]
-                    doc_item["average_confidence"] = round(sum(scores) / len(scores), 4) if scores else None
+                    ext_elig = evaluate_extraction_eligibility(
+                        extraction=ext_record,
+                        filename=file_display_name,
+                    )
 
-                    if ext_record.status == ExtractionStatus.FAILED.value:
+                    doc_item["extraction_status"] = ext_elig.status
+                    doc_item["extracted_fields_count"] = ext_elig.extracted_fields_count
+                    doc_item["average_confidence"] = ext_elig.average_confidence
+
+                    if not ext_elig.is_eligible:
                         doc_item["eligible_for_verification"] = False
-                        doc_item["error"] = ext_record.limitation_code or "Extraction failed"
-                        failed_docs += 1
-                        code = (
-                            "CORRUPTED_DOCUMENT_EVIDENCE"
-                            if ext_record.limitation_code == ExtractionLimitationCode.CORRUPTED_DOCUMENT.value
-                            else "UNSUPPORTED_DOCUMENT_EVIDENCE"
-                        )
-                        evidence_findings.append(
-                            ValidationFinding(
-                                rule_id="EVID_EXTRACTION_FAILED",
-                                field="documents",
-                                code=code,
-                                message=f"Document '{doc.original_filename}' extraction failed: {doc_item['error']}.",
-                                severity=Severity.WARNING,
-                                suggestion="Upload an uncorrupted PDF or image file.",
-                            )
-                        )
-                    elif ext_record.status == ExtractionStatus.INSUFFICIENT_TEXT.value:
-                        doc_item["eligible_for_verification"] = False
-                        doc_item["error"] = "Insufficient readable text"
+                        doc_item["ineligible_reason_code"] = ext_elig.reason_code
+                        doc_item["error"] = ext_elig.explanation
                         failed_docs += 1
                         evidence_findings.append(
                             ValidationFinding(
-                                rule_id="EVID_UNREADABLE_TEXT",
+                                rule_id=f"EVID_{ext_elig.reason_code}",
                                 field="documents",
-                                code="UNREADABLE_DOCUMENT_EVIDENCE",
-                                message=f"Document '{doc.original_filename}' contains insufficient readable text for automated extraction.",
+                                code=ext_elig.reason_code,
+                                message=ext_elig.explanation,
                                 severity=Severity.WARNING,
-                                suggestion="Upload a clearer, higher-resolution scan or digital PDF.",
+                                suggestion="Upload an uncorrupted, high-resolution document.",
                             )
                         )
                     else:
-                        successful_docs += 1
                         extracted_count += 1
+                        if cls_elig.is_confirmed:
+                            successful_docs += 1
+                            doc_item["eligible_for_verification"] = True
+                            doc_item["ineligible_reason_code"] = None
+                            doc_item["error"] = None
+                        else:
+                            failed_docs += 1
 
                 except Exception as e:
-                    logger.warning("Extraction failed for document %s: %s", doc.id, str(e))
+                    logger.warning("Extraction failed for document %s: %s", doc.id, type(e).__name__)
                     doc_item["extraction_status"] = "FAILED"
                     doc_item["eligible_for_verification"] = False
-                    doc_item["error"] = f"Extraction failed: {type(e).__name__}"
+                    doc_item["ineligible_reason_code"] = "CORRUPTED_DOCUMENT_EVIDENCE"
+                    doc_item["error"] = f"Extraction process encountered an error ({type(e).__name__})"
                     failed_docs += 1
                     evidence_findings.append(
                         ValidationFinding(
                             rule_id="EVID_EXTRACTION_EXCEPTION",
                             field="documents",
                             code="CORRUPTED_DOCUMENT_EVIDENCE",
-                            message=f"Document '{doc.original_filename}' processing encountered an error ({type(e).__name__}).",
+                            message=f"Document '{file_display_name}' processing encountered an error ({type(e).__name__}).",
                             severity=Severity.WARNING,
                             suggestion="Re-upload an uncorrupted PDF or image file.",
                         )
@@ -507,8 +543,8 @@ class OnboardingOrchestratorService:
 
         except Exception as e:
             db.rollback()
-            logger.error("Onboarding pipeline failed critically for vendor %s: %s", vendor_id, str(e), exc_info=True)
-            # Record failed run
+            logger.error("Onboarding pipeline failed critically for vendor %s: %s", vendor_id, type(e).__name__, exc_info=True)
+            # Record failed run with sanitized error message (zero internal path/credential leakage)
             failed_run = OnboardingProcessRun(
                 vendor_id=vendor_id,
                 status="FAILED",
@@ -519,8 +555,8 @@ class OnboardingOrchestratorService:
                 documents_snapshot=docs_snapshot,
                 stage_results=stage_results,
                 document_breakdown=doc_breakdown,
-                findings_summary={"error": str(e)},
-                error_message=f"Critical pipeline failure: {type(e).__name__} - {str(e)}",
+                findings_summary={"error_type": type(e).__name__},
+                error_message=f"Critical pipeline failure: {type(e).__name__}",
                 completed_at=datetime.now(timezone.utc),
             )
             db.add(failed_run)
