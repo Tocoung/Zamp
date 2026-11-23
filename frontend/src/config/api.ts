@@ -935,3 +935,191 @@ export async function fetchDocumentExtractionHistory(
 
   return response.json();
 }
+
+// -----------------------------------------------------------------------------
+// Cross-Document Verification & Discrepancy Detection Interfaces & APIs
+// -----------------------------------------------------------------------------
+
+export type VerificationRunStatus =
+  | 'NOT_RUN'
+  | 'COMPLETED'
+  | 'COMPLETED_WITH_FINDINGS'
+  | 'NEEDS_REVIEW'
+  | 'INCOMPLETE'
+  | 'FAILED';
+
+export type FindingResult =
+  | 'MATCH'
+  | 'CONFIRMED_DISCREPANCY'
+  | 'POTENTIAL_DISCREPANCY'
+  | 'INSUFFICIENT_EVIDENCE'
+  | 'MISSING_DOCUMENT'
+  | 'UNSUPPORTED_DOCUMENT';
+
+export type FindingSeverity = 'INFO' | 'WARNING' | 'CRITICAL';
+
+export interface EvidenceSource {
+  source_type: 'VENDOR_PROFILE' | 'EXTRACTED_DOCUMENT_FIELD';
+  field_name: string;
+  value_display?: string | null;
+  document_id?: string | null;
+  document_name?: string | null;
+  document_category?: string | null;
+  extraction_id?: string | null;
+  page_number?: number | null;
+  extraction_method?: string | null;
+  extraction_status?: string | null;
+  confidence_score?: number | null;
+  sanitized_snippet?: string | null;
+}
+
+export interface VerificationFinding {
+  id: string;
+  verification_run_id: string;
+  field_name: string;
+  comparison_type: string;
+  result: FindingResult;
+  severity: FindingSeverity;
+  explanation: string;
+  similarity_score?: number | null;
+  comparison_summary?: string | null;
+  evidence_sources: EvidenceSource[];
+  created_at: string;
+}
+
+export interface VerificationRunSummary {
+  id: string;
+  vendor_id: string;
+  status: VerificationRunStatus;
+  ruleset_version: string;
+  total_comparisons: number;
+  matches: number;
+  confirmed_discrepancies: number;
+  potential_discrepancies: number;
+  insufficient_evidence: number;
+  missing_documents: number;
+  unsupported_documents: number;
+  summary_notes?: string | null;
+  meta?: Record<string, any>;
+  created_at: string;
+}
+
+export interface VerificationRunResponse extends VerificationRunSummary {
+  findings: VerificationFinding[];
+}
+
+export interface VerificationHistoryResponse {
+  total: number;
+  page: number;
+  page_size: number;
+  items: VerificationRunSummary[];
+}
+
+export async function runVendorVerification(
+  vendorId: string
+): Promise<VerificationRunResponse> {
+  const response = await fetch(`${API_BASE_URL}/vendors/${vendorId}/verification`, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+    },
+  });
+
+  if (!response.ok) {
+    let errorMsg = `Verification failed (HTTP ${response.status})`;
+    try {
+      const err = await response.json();
+      if (err.detail) errorMsg = typeof err.detail === 'string' ? err.detail : JSON.stringify(err.detail);
+    } catch {
+      // fallback
+    }
+    throw new Error(errorMsg);
+  }
+
+  return response.json();
+}
+
+export async function fetchLatestVerification(
+  vendorId: string
+): Promise<VerificationRunResponse | null> {
+  const response = await fetch(`${API_BASE_URL}/vendors/${vendorId}/verification/latest`, {
+    method: 'GET',
+    headers: {
+      Accept: 'application/json',
+    },
+  });
+
+  if (response.status === 404) {
+    return null;
+  }
+
+  if (!response.ok) {
+    let errorMsg = `Failed to fetch verification (HTTP ${response.status})`;
+    try {
+      const err = await response.json();
+      if (err.detail) errorMsg = err.detail;
+    } catch {
+      // fallback
+    }
+    throw new Error(errorMsg);
+  }
+
+  return response.json();
+}
+
+export async function fetchVerificationHistory(
+  vendorId: string,
+  page = 1,
+  pageSize = 10
+): Promise<VerificationHistoryResponse> {
+  const response = await fetch(
+    `${API_BASE_URL}/vendors/${vendorId}/verification/history?page=${page}&page_size=${pageSize}`,
+    {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+      },
+    }
+  );
+
+  if (!response.ok) {
+    let errorMsg = `Failed to fetch verification history (HTTP ${response.status})`;
+    try {
+      const err = await response.json();
+      if (err.detail) errorMsg = err.detail;
+    } catch {
+      // fallback
+    }
+    throw new Error(errorMsg);
+  }
+
+  return response.json();
+}
+
+export async function fetchVerificationRun(
+  vendorId: string,
+  runId: string
+): Promise<VerificationRunResponse> {
+  const response = await fetch(
+    `${API_BASE_URL}/vendors/${vendorId}/verification/${runId}`,
+    {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+      },
+    }
+  );
+
+  if (!response.ok) {
+    let errorMsg = `Failed to fetch verification run (HTTP ${response.status})`;
+    try {
+      const err = await response.json();
+      if (err.detail) errorMsg = err.detail;
+    } catch {
+      // fallback
+    }
+    throw new Error(errorMsg);
+  }
+
+  return response.json();
+}

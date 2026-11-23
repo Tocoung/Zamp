@@ -53,6 +53,7 @@ async def lifespan(app: FastAPI):
         from app.models.document import VendorDocument  # noqa: F401 - ensure document model registered
         from app.models.classification import DocumentClassification  # noqa: F401 - ensure classification model registered
         from app.models.extraction import DocumentExtraction  # noqa: F401 - ensure extraction model registered
+        from app.models.verification import VerificationRun, VerificationFinding  # noqa: F401 - ensure verification models registered
         Base.metadata.create_all(bind=engine)
         logger.info("Database schema verified and initialized.")
 
@@ -107,21 +108,29 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Resolve paths to static frontend distribution
-dist_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../frontend/dist"))
-dist_index = os.path.join(dist_dir, "index.html")
-dist_assets = os.path.join(dist_dir, "assets")
-dist_favicon = os.path.join(dist_dir, "favicon.svg")
+from typing import Optional
 
-# Mount frontend assets (/assets/...)
-if os.path.exists(dist_assets) and os.path.isdir(dist_assets):
-    app.mount("/assets", StaticFiles(directory=dist_assets), name="assets")
+# Resolve paths to static frontend distribution (checking both compiled dist and static templates)
+dist_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../frontend/dist"))
+static_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../frontend/static"))
+
+def _resolve_static_path(subpath: str = "") -> Optional[str]:
+    for base in [dist_dir, static_dir]:
+        target = os.path.join(base, subpath) if subpath else base
+        if os.path.exists(target):
+            return target
+    return None
+
+assets_dir = _resolve_static_path("assets")
+if assets_dir and os.path.isdir(assets_dir):
+    app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
 
 
 @app.get("/favicon.svg", include_in_schema=False)
 def favicon():
-    if os.path.exists(dist_favicon):
-        return FileResponse(dist_favicon)
+    fav = _resolve_static_path("favicon.svg")
+    if fav:
+        return FileResponse(fav)
     return Response(status_code=404)
 
 
@@ -148,8 +157,9 @@ def read_root(request: Request):
         }
 
     # Serve the React SPA index.html for all browser visitors
-    if os.path.exists(dist_index):
-        return FileResponse(dist_index)
+    index_html = _resolve_static_path("index.html")
+    if index_html:
+        return FileResponse(index_html)
 
     return {
         "service": settings.PROJECT_NAME,
@@ -213,6 +223,18 @@ def readyz(response: Response) -> ReadinessResponse:
 
 # Mount API v1 router
 app.include_router(api_router, prefix=settings.API_V1_PREFIX)
+
+
+# SPA catch-all fallback for non-API client-side routes
+@app.get("/{full_path:path}", include_in_schema=False)
+def spa_catch_all(full_path: str, request: Request):
+    """Fallback route serving React SPA for deep links and client-side routes."""
+    if full_path.startswith(("api", "docs", "redoc", "openapi.json", "healthz", "readyz", "assets")):
+        return Response(status_code=404)
+    index_html = _resolve_static_path("index.html")
+    if index_html:
+        return FileResponse(index_html)
+    return Response(status_code=404)
 
 
 if __name__ == "__main__":

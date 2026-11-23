@@ -78,6 +78,10 @@ class ExtractedField(BaseModel):
     @classmethod
     def sync_confidence_and_quality(cls, data: Any) -> Any:
         if isinstance(data, dict):
+            # Support both 'value' and 'extracted_value'
+            if "value" not in data and "extracted_value" in data:
+                data["value"] = data["extracted_value"]
+
             # Sync quality_score and confidence for bidirectional backward compatibility
             qs = data.get("quality_score")
             conf = data.get("confidence")

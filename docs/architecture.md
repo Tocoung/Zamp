@@ -2,8 +2,8 @@
 ## Architecture Design Document — Vendor Onboarding Automation
 
 **Author:** Lead Software Engineer  
-**Version:** 2.4.0 (Phase 2 — Submission Readiness & Final Integration)  
-**Status:** Approved & Implemented Foundation, Security Hardening, Deterministic Validation, Decision Engine, End-to-End Integration, Document Intake, Storage Hardening, Document Classification, OCR Structured Information Extraction, Evidence Quality Scoring, & Operational Readiness  
+**Version:** 2.5.0 (Phase 2 — Step 5 Cross-Document Validation & Discrepancy Detection)  
+**Status:** Approved & Implemented Foundation, Security Hardening, Deterministic Validation, Decision Engine, End-to-End Integration, Document Intake, Storage Hardening, Document Classification, OCR Structured Information Extraction, Evidence Quality Scoring, Cross-Document Validation, Discrepancy Detection, & Operational Readiness  
 
 ---
 
@@ -648,11 +648,86 @@ Document extraction is strictly an **evidence gathering** operation:
 - Extracted values and quality scores are stored exclusively in the `document_extractions` table.
 - Extraction never overwrites vendor-submitted form data (e.g. `Vendor.legal_name`, `Vendor.tax_id_number`, `VendorAccount.account_number`).
 - Extraction never alters vendor onboarding decisions (`Vendor.status` remains unchanged; `vendor_decisions` are not triggered or mutated).
-- Cross-document discrepancy detection and automated decision reconciliation are deliberately deferred to Step 5.
+- Cross-document discrepancy detection and automated decision reconciliation are handled by the Step 5 Verification Engine.
 
 ---
 
-## 15. Dependency Reproducibility Strategy
+## 15. Cross-Document Validation & Discrepancy Detection Engine (Step 5)
+
+The Cross-Document Validation Engine provides a deterministic, multi-source verification and discrepancy detection mechanism that reconciles vendor-submitted profile data against extracted document evidence and cross-validates document evidence against other documents.
+
+```
++-----------------------------------------------------------------------------------+
+|                         CROSS-DOCUMENT VERIFICATION ENGINE                         |
+|                                                                                   |
+|  Vendor Profile Form                Document Extractions (OCR / PDF)              |
+|  [Legal Name, GSTIN, Bank Acc]      [GST Certificate, COI, Cheque, Address Proof] |
+|              |                                        |                           |
+|              +-------------------+--------------------+                           |
+|                                  |                                                |
+|                                  v                                                |
+|                   Deterministic Verification Rules (12+)                          |
+|             +--------------------+---------------------+                          |
+|             | Exact Identifiers  | Date Validation     |                          |
+|             | - GSTIN (Strict)   | - Incorp Date       |                          |
+|             | - Reg No (Strict)  | - Ambiguity Check   |                          |
+|             | - IFSC (Strict)    |                     |                          |
+|             +--------------------+---------------------+                          |
+|             | Fuzzy Entity Names | Fuzzy Addresses     |                          |
+|             | - Composite Leven/ | - Token Jaccard     |                          |
+|             |   Token Sort       | - Component Checks  |                          |
+|             +--------------------+---------------------+                          |
+|             | Masked Bank Acc    | Evidence Integrity  |                          |
+|             | - Decrypted in mem | - OCR Confidence    |                          |
+|             | - ••••1234 masked  | - Unreadable check  |                          |
+|             +--------------------+---------------------+                          |
+|                                  |                                                |
+|                                  v                                                |
+|         Verification Run & Findings Persistence (`vendor_verifications`)           |
+|         - Summary Metrics: Matches, Discrepancies, Missing, Low-Confidence        |
+|         - Status Precedence: FAILED > NEEDS_REVIEW > INCOMPLETE > COMPLETED       |
+|                                  |                                                |
+|                                  v                                                |
+|         Decision Engine Integration: Reconciles Vendor Status (PENDING on issues) |
++-----------------------------------------------------------------------------------+
+```
+
+### A. Core Architecture & Verification Rules
+1. **Multi-Source Reconciliation:**
+   - Compares Profile vs Document (e.g., Vendor Profile GSTIN vs GST Certificate GSTIN).
+   - Compares Cross-Document Evidence (e.g., GST Certificate Legal Name vs Certificate of Incorporation Legal Name).
+   - Flags Missing Required Evidence (e.g., Tax Certificate or Bank Proof missing).
+2. **Deterministic Comparison Primitives:**
+   - **Exact Statutory Identifiers:** Case-insensitive alphanumeric equality for GSTIN, Corporate Registration Number, and IFSC codes.
+   - **Financial Account Verification:** Bank account numbers are decrypted strictly in memory using Fernet, normalized to digits, and matched. All representations in findings, logs, and UI are masked (`••••••••1234`).
+   - **Date Matching & Ambiguity Safety:** ISO calendar parsing and normalization. Dates with ambiguous conventions (`day <= 12` and `month <= 12` with differing day/month interpretations) are flagged as `POTENTIAL_DISCREPANCY` (never confirmed discrepancy).
+   - **Fuzzy Company Name Similarity:** Composite metric combining Token Sort Ratio (60%) and Levenshtein Distance (40%). Thresholds: $\ge 0.90 \to \text{MATCH}$, $0.75 - 0.89 \to \text{POTENTIAL\_DISCREPANCY}$, $< 0.75 \to \text{CONFIRMED\_DISCREPANCY}$ (Critical Severity).
+   - **Conservative Fuzzy Address Matching:** Component-based validation (postal code and city matching) paired with Token Jaccard similarity. Thresholds: $\ge 0.75 \to \text{MATCH}$, $0.50 - 0.74 \to \text{POTENTIAL\_DISCREPANCY}$, $< 0.50 \to \text{CONFIRMED\_DISCREPANCY}$.
+3. **Evidence Confidence & Unreadable Handling:**
+   - Extractions with confidence $< 0.70$ or status `UNREADABLE` generate `INSUFFICIENT_EVIDENCE` or `UNSUPPORTED_DOCUMENT` findings.
+   - Low confidence or unreadable documents **NEVER** trigger automatic rejection (`status = REJECTED`).
+
+### B. Persistence & Decision Engine Integration
+- **Persistent Entities:**
+  - `VerificationRun` (`vendor_verifications` table): Stores vendor ID, execution timestamp, run status, ruleset version, summary counts (matches, confirmed discrepancies, potential discrepancies, missing docs, unsupported docs, insufficient evidence), and JSON metadata.
+  - `VerificationFinding` (`verification_findings` table): Stores finding result, severity (`INFO`, `WARNING`, `CRITICAL`), comparison type, rule identifier, source 1 and source 2 evidence objects (with document ID, page number, confidence, provenance, and masked values), and human-readable explanation.
+- **Decision Engine Status Transition:**
+  - If a vendor is currently `APPROVED` and a verification run yields `CONFIRMED_DISCREPANCY` or `MISSING_DOCUMENT`, the vendor's status is automatically transitioned to `PENDING` (Human Review Required).
+  - Unreadable fields and low-confidence OCR route vendors to `PENDING`—never `REJECTED`.
+  - Non-mutation invariant: Vendor profile records are never overwritten by extracted values.
+
+### C. Operational Frontend (`VerificationPanel.tsx`)
+- Integrated directly into `VendorDetailModal.tsx` as Section 7.
+- **Header & Summary Cards:** 6 high-density metric cards (Matches, Confirmed Discrepancies, Potential Discrepancies, Missing Docs, Unsupported Docs, Insufficient Evidence).
+- **Result & Severity Filters:** Interactive filter bar enabling operators to filter findings by status (`ALL`, `CONFIRMED_DISCREPANCY`, `POTENTIAL_DISCREPANCY`, `MATCH`, etc.) and severity (`CRITICAL`, `WARNING`, `INFO`).
+- **Expandable Evidence Sources:** Each finding displays Source 1 and Source 2 cards with field values, confidence badges, document category labels, and line provenance.
+- **Embedded Page Inspection:** Dedicated "Inspect Page" button opens a document viewer modal with high-resolution page rendering and bounding evidence notes.
+- **Historical Runs:** Operator can inspect any prior verification run from the run history list.
+- **Legal Disclaimer:** Clear compliance banner stating automated verification findings assist human review and do not alter legal vendor records.
+
+---
+
+## 16. Dependency Reproducibility Strategy
 
 For a one-week case study project, dependency management balances determinism with zero unnecessary tool overhead:
 - **Backend:** Pin explicit, exact versions in `backend/requirements.txt` (`==` pinning). Standard installation via `python3 -m venv .venv && pip install -r requirements.txt`. Includes `cryptography==50.0.2`, `pytesseract==0.3.13`, `pdf2image==1.17.0`, and `pillow==11.0.0`. System binaries: `tesseract` and `poppler` (`pdftoppm`).

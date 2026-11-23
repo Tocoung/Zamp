@@ -34,6 +34,7 @@ import { ValidationReport } from './ValidationReport';
 import { DecisionReport } from './DecisionReport';
 import { VendorActivityTimeline } from './VendorActivityTimeline';
 import { DocumentManager } from './DocumentManager';
+import { VerificationPanel } from './VerificationPanel';
 
 interface VendorDetailModalProps {
   vendor: VendorResponse | null;
@@ -689,7 +690,20 @@ export const VendorDetailModal: React.FC<VendorDetailModalProps> = ({
                 />
               </div>
 
-              {/* Section 7: Lifecycle Activity History */}
+              {/* Section 7: Cross-Document Validation & Discrepancy Detection */}
+              <div className="pt-2 border-t border-slate-200">
+                <VerificationPanel
+                  vendorId={vendor.id}
+                  onActivityChange={() => {
+                    loadActivities(vendor.id);
+                    if (initialVendor) {
+                      loadDecisionData(initialVendor.id);
+                    }
+                  }}
+                />
+              </div>
+
+              {/* Section 8: Lifecycle Activity History */}
               <div className="pt-2 border-t border-slate-200">
                 <VendorActivityTimeline activities={activities} isLoading={isLoadingActivities} />
               </div>

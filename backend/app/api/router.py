@@ -1,13 +1,14 @@
 """API Router aggregation module."""
 
 from fastapi import APIRouter
-from app.api.v1.endpoints import health, vendors, documents
+from app.api.v1.endpoints import health, vendors, documents, verification
 
 api_router = APIRouter()
 
 # Mount v1 endpoints
 api_router.include_router(health.router, tags=["Health"])
 api_router.include_router(vendors.router, prefix="/vendors", tags=["Vendors"])
+api_router.include_router(verification.router)
 api_router.include_router(documents.router, tags=["Documents"])
 
 # Future Phase Extension Mount Points:
